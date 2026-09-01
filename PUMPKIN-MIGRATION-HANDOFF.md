@@ -296,3 +296,19 @@ curl.exe -sS -H "Authorization: Bearer $key" -H 'Accept: application/json' "http
 ```
 
 Before any new upload, verify whether `/pumpkin`, `/libpatchbukkit.so`, `/dev-plugins.tar.gz`, and `/migration-test.properties` exist. Remove only the known temporary files. Do not delete copied plugin data or world data.
+
+## 2026-09-01 Session Update
+
+- Language: all future reports and handoffs must use plain English.
+- `DEVPlayAsia` (`71b0701f...`) and all production servers must remain untouched. Read-only resource checks are allowed; do not copy or edit its world.
+- `Pumpkin DEV` (`0663eb80...`) remains the only test target. Its world copy is complete and must not be edited during bridge tests.
+- Base Pumpkin starts on port `25553` without PatchBukkit. The PatchBukkit bridge crashes during embedded JVM startup, before any Java plugin loads.
+- The crash reproduces with an empty plugin directory and the official PatchBukkit test plugin. Current bridge and test plugin remain disabled on the target.
+- PatchBukkit checkout: `E:\snapwing\patchbukkit-eval-source`, branch `diag/playasia-jvm-core-dump`.
+- PatchBukkit commits added this session: `9ef6cc6` adds JVM diagnostics, JOML no-unsafe settings, and required Java module opens; `f89057a` adds the Linux GitHub Actions build; `672673c` adds automated Pumpkin DEV deployment and test.
+- Workflow: `https://github.com/Aevienne/PatchBukkit/actions/workflows/build-linux.yml`.
+- GitHub environment `pumpkin-dev` contains the SSH key and host key. `VM_USER` and `VM_SUDO_PASSWORD` were added by the owner.
+- The workflow builds on GitHub Actions, uploads the Linux bridge, deploys only to Pumpkin DEV, runs an isolated 30-second Docker test, then restores `.disabled` files. It never starts the panel server and never touches production.
+- Do not build Rust on the Calagopus VM or the laptop. The VM build caused host memory pressure and production container restarts. The laptop build caused WSL failures even with resource limits.
+- The manually triggered workflow run `33498881654` was still in progress when this handoff was updated. Check its status before triggering another run.
+- No PAT, panel key, VM password, private key, or other login detail belongs in this file or any repository file.
