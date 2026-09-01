@@ -83,9 +83,12 @@ Invoke-RestMethod -Method Get -Uri "https://panel.playasia.online/api/client/ser
 plink -batch -hostkey ssh-ed25519\ 255\ SHA256:khTar0VCSUTUNy21qoL44GVZjDipvEQlB95vez8OpzY -P 2222 -l ailegabrielle -pw <pw> 139.99.121.15 "bash ~/crash-test.sh"
 ```
 
-## 8) Safety
+## 8) Safety & Secrets (MANDATORY — any model must obey)
+- **NEVER post, print, echo, log, or commit ANY secret** — GitHub PAT (`ghp_...`/`github_pat_...`), `calagopus`/`CALAGOPUS` panel API key, VM SSH password (`@l03e1t3`), hostkey private material, or any token/password/login detail — not in chat, not in GitHub issues/PRs/commits, not in logs, not in screenshots, not in `git diff`.
+- `token.txt` is **ephemeral only**: `Get-Content token.txt -Raw | gh auth login --with-token` then `Remove-Item token.txt -Force` immediately; it is gitignored and must never be committed. Same for any `*.env` or secret file.
+- When debugging, redact: use `gh auth status` (shows `ghp_****`) and `$key.Substring(0,4) + '****'` never the full value. `gh auth token` output must never be pasted anywhere.
+- If you must reference VM SSH, do not re-print the password in PR descriptions or commit messages — assume the reader has this workflow file locally.
 - Read-only checks first; stop source before world copy.
-- Never print or commit `token.txt`, PAT, or `calagopus` key. `token.txt` lives only to pipe into `gh auth login --with-token`.
 - Keep `25553` isolated; Bedrock off until verified.
 
 ## 9) Prompt to Resume (paste to new model)
