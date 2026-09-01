@@ -90,3 +90,17 @@ plink -batch -hostkey ssh-ed25519\ 255\ SHA256:khTar0VCSUTUNy21qoL44GVZjDipvEQlB
 
 ## 9) Prompt to Resume (paste to new model)
 > Resume Pumpkin migration per `PUMPKIN-COLLABORATION-WORKFLOW.md` and `PUMPKIN-MIGRATION-HANDOFF.md`. Verify `gh auth status` (Aevienne), forks `Aevienne/Pumpkin` + `Aevienne/PatchBukkit`, VM SSH, and server states. Continue centralized work on those forks (branches/PRs), keep production untouched. Report current state then proceed with next step (PatchBukkit JVM core-dump diagnosis or native Hello-Pumpkin probe).
+
+## 10) Full Directory (local + GitHub — any session reads here)
+- **Local (this PC):**
+  - `C:\Users\Vincent\Desktop\snapwing\PUMPKIN-COLLABORATION-WORKFLOW.md` (this file)
+  - `C:\Users\Vincent\Desktop\snapwing\PUMPKIN-MIGRATION-HANDOFF.md` (server IDs, hashes, state)
+  - `C:\Users\Vincent\Desktop\snapwing\crash-test.sh` (VM manual Pumpkin run)
+- **Centralized on GitHub (readable by any other chat/model — git log):**
+  - `https://github.com/Aevienne/Pumpkin/blob/master/PUMPKIN-COLLABORATION-WORKFLOW.md` — raw: `https://raw.githubusercontent.com/Aevienne/Pumpkin/master/PUMPKIN-COLLABORATION-WORKFLOW.md`
+  - `https://github.com/Aevienne/Pumpkin/blob/master/PUMPKIN-MIGRATION-HANDOFF.md` — raw: `https://raw.githubusercontent.com/Aevienne/Pumpkin/master/PUMPKIN-MIGRATION-HANDOFF.md`
+  - `git log --oneline` on `Aevienne/Pumpkin` master shows docs commits (2957246, 6ffb888) — any session `gh repo clone Aevienne/Pumpkin` gets full context and history.
+- **Forks:**
+  - `Aevienne/Pumpkin` fork of `Pumpkin-MC/Pumpkin` — all workflow/docs + future fix branches
+  - `Aevienne/PatchBukkit` fork of `Pumpkin-MC/PatchBukkit` — bridge/JVM fixes
+- Updated: 2026-09-01 — PatchBukkit disabled (`.disabled`) until JVM core-dump fixed; base Pumpkin on 25553 stable; use manual `docker run ... yolks:java_25 timeout 15 ./pumpkin` to avoid truncated panel logs.
