@@ -1,0 +1,83 @@
+name: Release (fork)
+
+# Fork releases of the `pumpkin` server binary (Linux x86_64 only — what our
+# hosts run). Upstream release.yml is left untouched for clean merges; it
+# cannot publish here anyway (needs Pumpkin-MC signing secrets).
+#
+# - push tags `fork-v*` (e.g. `fork-v0.1.0`) → release with that tag
+# - manual dispatch → `tag` input (default `nightly`, force-updated)
+#
+# The `VERSION` egg variable / install script can point at these tags
+# (GITHUB_PACKAGE=Aevienne/Pumpkin) once they exist. Until the bridge is
+# rebuilt against a released rev, keep deploying pinned CI artifacts.
+
+on:
+  push:
+    tags:
+      - 'fork-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (default: nightly)'
+        required: false
+        default: 'nightly'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pumpkin-linux
+          cache-all-crates: true
+
+      - name: Install link tools
+        run: sudo apt-get update && sudo apt-get install -y mold clang || true
+
+      - name: Build release binary
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+        run: |
+          cargo build --release --locked -p pumpkin --verbose
+          mkdir -p dist
+          cp target/release/pumpkin dist/pumpkin-x86_64-linux
+          chmod +x dist/pumpkin-x86_64-linux
+          git rev-parse HEAD > dist/SOURCE_REV
+          (cd dist && sha256sum pumpkin-x86_64-linux > checksums.sha256)
+          ls -lh dist/
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT";
+          elif [ "${{ github.ref_type }}" = "tag" ]; then echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT";
+          else echo "tag=nightly" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Pumpkin fork ${{ steps.tag.outputs.tag }}
+          prerelease: true
+          files: dist/*
+          body: |
+            Fork build of Pumpkin for PlayAsia hosts (Linux x86_64).
+            Source rev: see SOURCE_REV. Bridge-compat: verify struct layout
+            vs the pinned PatchBukkit rev before deploying (see AI_WORKFLOW_GUIDE §7).
