@@ -1,0 +1,195 @@
+name: Deploy Pumpkin server
+
+# Installs a `pumpkin` binary built by build-linux.yml onto a Calagopus
+# Pumpkin host and smoke-tests it. Manual dispatch only.
+#
+# SAFETY (learned on PatchBukkit):
+# - installs to `pumpkin.real`, never touches the `./pumpkin` wrapper script
+# - backs up the running binary to `pumpkin.real.bak-<ts>` first (rollback:
+#   rename back + restart, no CI needed)
+# - writes `.signals/.deploy-notice-start.json` BEFORE mutating anything and
+#   `-done.json` at the end (deploy-watch janitor flags start-without-done)
+# - propagates the remote exit code (a swallowing `echo` once hid exit 139)
+# - the test runs `timeout 90 ./pumpkin`; exit 124 (timeout) = healthy boot
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   VM_SSH_PRIVATE_KEY, VM_SUDO_PASSWORD, VM_PORT, VM_USER,
+#   CALAGOPUS_API_KEY (panel signed-URL fallback),
+#   PLAYASIA_DISCORD_WEBHOOK (optional, empty = skip).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build/deploy (branch, tag, or SHA)'
+        required: false
+        default: 'master'
+      target:
+        description: 'Which server to deploy to'
+        required: true
+        type: choice
+        options:
+          - pumpkin-dev
+          - p-lobby
+        default: 'pumpkin-dev'
+      skip_test:
+        description: 'Install only, skip the 90s smoke test'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-pumpkin-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VM_PORT: ${{ secrets.VM_PORT }}
+      VM_USER: ${{ secrets.VM_USER }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Resolve target
+        id: target
+        run: |
+          case "${{ inputs.target }}" in
+            pumpkin-dev)
+              echo "sid=0663eb80-d3b8-45bd-86b1-579098d1f653" >> "$GITHUB_OUTPUT"
+              echo "port=25553" >> "$GITHUB_OUTPUT"
+              ;;
+            p-lobby)
+              echo "sid=9b3a9d1f-904b-4f73-b526-93072f65595e" >> "$GITHUB_OUTPUT"
+              echo "port=25554" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Download latest build artifact for ref
+        id: dl
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: build-linux.yml
+          workflow_search: true
+          workflow_conclusion: success
+          branch: ${{ inputs.ref }}
+          name: pumpkin-linux-*
+          name_is_regexp: true
+          path: artifact
+          search_artifacts: true
+          check_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Locate binary
+        run: |
+          ls -R artifact 2>&1 | head -n 50 || true
+          ART_BIN=$(find artifact -type f -name "pumpkin" 2>/dev/null | head -n 1)
+          if [ -z "$ART_BIN" ]; then echo "ERROR: pumpkin binary not found in artifact"; exit 1; fi
+          echo "ART_BIN=$ART_BIN ($(stat -c%s "$ART_BIN"))"
+          echo "ART_BIN=$ART_BIN" >> "$GITHUB_ENV"
+          test -s "$ART_BIN" || { echo "ERROR: empty binary"; exit 1; }
+
+      - name: Configure SSH
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+
+      - name: Trust VM host key
+        env:
+          VM_PORT: ${{ secrets.VM_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${VM_PORT:-2222}" -t ed25519 15.235.204.178 2>/dev/null | head -n 1 > ~/.ssh/known_hosts || true
+          cat ~/.ssh/known_hosts
+
+      - name: Deploy to host (SSH primary, API fallback for transport)
+        env:
+          VM_SUDO_PASSWORD: ${{ secrets.VM_SUDO_PASSWORD }}
+          VM_PORT: ${{ secrets.VM_PORT }}
+          VM_USER: ${{ secrets.VM_USER }}
+          CALAGOPUS_API_KEY: ${{ secrets.CALAGOPUS_API_KEY }}
+          PLAYASIA_DISCORD_WEBHOOK: ${{ secrets.PLAYASIA_DISCORD_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          PORT="${VM_PORT:-2222}"
+          SID="${{ steps.target.outputs.sid }}"
+          set +e
+          scp -P "$PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "$ART_BIN" "${VM_USER}@15.235.204.178:~/pumpkin.new" 2>&1 | tail -n 3
+          SCP_EXIT=${PIPESTATUS[0]}
+          echo "SCP_EXIT=$SCP_EXIT"
+          if [ $SCP_EXIT -ne 0 ]; then echo "SCP failed; continuing — remote install step will report"; fi
+          {
+            printf '%s\n' "$VM_SUDO_PASSWORD"
+            cat <<'REMOTE'
+          set -euo pipefail
+          vol=/var/lib/calagopus-wings/volumes/__SID__
+          ls -lh /home/ghosty/pumpkin.new ~/pumpkin.new 2>&1 || echo "checking staged binary"
+          SRC_BIN=""; for p in /home/ghosty/pumpkin.new ~/pumpkin.new; do [ -f "$p" ] && SRC_BIN="$p" && break; done
+          if [ -z "$SRC_BIN" ]; then echo "ERROR: staged pumpkin binary not found"; exit 1; fi
+          # Deploy-start marker FIRST (deploy-watch janitor flags start-without-done).
+          mkdir -p "$vol/.signals" 2>&1 || true
+          echo "{\"bin\":\"pumpkin-$(date -u +%Y%m%d%H%M%S)\",\"by\":\"github-actions/${GITHUB_SHA:-unknown}\"}" > "$vol/.signals/.deploy-notice-start.json" || true
+          # Rollback copy of the running binary (rename back + restart to revert).
+          if [ -f "$vol/pumpkin.real" ]; then cp -a "$vol/pumpkin.real" "$vol/pumpkin.real.bak-$(date -u +%Y%m%d%H%M%S)"; ls "$vol"/pumpkin.real.bak-* 2>&1 | tail -n 3; fi
+          # Install as pumpkin.real so a wrapper at ./pumpkin keeps working.
+          # Fresh volume without wrapper: install straight to ./pumpkin.
+          if [ -f "$vol/pumpkin" ] && head -c 2 "$vol/pumpkin" | grep -q '#!'; then
+            install -m 0755 "$SRC_BIN" "$vol/pumpkin.real"
+          else
+            install -m 0755 "$SRC_BIN" "$vol/pumpkin"
+          fi
+          chmod +x "$vol/pumpkin" "$vol/pumpkin.real" 2>/dev/null || true
+          ls -lh "$vol/pumpkin" "$vol/pumpkin.real" 2>&1 || true
+          if [ "${{ inputs.skip_test }}" = "true" ]; then echo "skip_test=true — installed only"; echo "{\"bin\":\"pumpkin\",\"by\":\"github-actions\"}" > "$vol/.signals/.deploy-notice-done.json" || true; exit 0; fi
+          set +e
+          docker run --rm --entrypoint "" -v "$vol":/home/container -w /home/container ghcr.io/ptero-eggs/yolks:java_25 bash -c 'timeout 90 ./pumpkin 2>&1 | tee /home/container/pumpkin-deploy-test.log; echo EXIT_CODE:${PIPESTATUS[0]} > /home/container/pumpkin-exit-code.log'
+          PUMPKIN_EXIT=$(cat "$vol/pumpkin-exit-code.log" 2>/dev/null || echo "unknown")
+          echo "Pumpkin exit: $PUMPKIN_EXIT"
+          grep -c "Server is now running" "$vol/pumpkin-deploy-test.log" 2>&1 || echo "no running line"
+          tail -n 30 "$vol/pumpkin-deploy-test.log" 2>&1 || true
+          ls -lh "$vol"/hs_err*.log "$vol"/core* 2>&1 || echo "No hs_err/core in vol"
+          echo "{\"bin\":\"pumpkin\",\"by\":\"github-actions\"}" > "$vol/.signals/.deploy-notice-done.json" || true
+          if [ -n "${PLAYASIA_DISCORD_WEBHOOK:-}" ]; then MSG=":package: [Pumpkin ${{ inputs.target }}] pumpkin $(date -u +%Y-%m-%dT%H:%M:%SZ) exit $PUMPKIN_EXIT by github-actions/${GITHUB_SHA:-unknown}"; curl -sS -X POST -H "Content-Type: application/json" -d "{\"content\":\"$MSG\"}" "$PLAYASIA_DISCORD_WEBHOOK" || true; fi
+          test "${PUMPKIN_EXIT#EXIT_CODE:}" -eq 124
+          REMOTE
+          } | sed "s/__SID__/${{ steps.target.outputs.sid }}/" | ssh -p "${PORT:-2222}" -o StrictHostKeyChecking=no "${VM_USER}@15.235.204.178" 'sudo -S bash -s'
+          SSH_EXIT=${PIPESTATUS[1]:-1}
+          echo "SSH deploy exit=$SSH_EXIT"
+          exit $SSH_EXIT
+
+      - name: Fetch diagnostics
+        if: always()
+        env:
+          VM_SUDO_PASSWORD: ${{ secrets.VM_SUDO_PASSWORD }}
+          VM_PORT: ${{ secrets.VM_PORT }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          set +e
+          PORT="${VM_PORT:-2222}"
+          mkdir -p diagnostics
+          {
+            printf '%s\n' "$VM_SUDO_PASSWORD"
+            cat <<'REMOTE'
+          vol=/var/lib/calagopus-wings/volumes/__SID__
+          cat "$vol"/pumpkin-deploy-test.log 2>&1 | tail -n 200 || true
+          ls -lh "$vol"/hs_err*.log "$vol"/core* "$vol"/pumpkin*.log 2>&1 || true
+          REMOTE
+          } | sed "s/__SID__/${{ steps.target.outputs.sid }}/" | ssh -p "${PORT:-2222}" -o StrictHostKeyChecking=no "${VM_USER}@15.235.204.178" 'sudo -S bash -s' | tee diagnostics/remote.log || true
+          ls -lh diagnostics/ || true
+
+      - name: Upload deploy diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pumpkin-deploy-diagnostics-${{ inputs.target }}-${{ github.sha }}
+          if-no-files-found: ignore
+          path: diagnostics/
+          retention-days: 7
