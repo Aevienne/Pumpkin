@@ -11,11 +11,20 @@ name: Deploy Pumpkin server
 #   `-done.json` at the end (deploy-watch janitor flags start-without-done)
 # - propagates the remote exit code (a swallowing `echo` once hid exit 139)
 # - the test runs `timeout 90 ./pumpkin`; exit 124 (timeout) = healthy boot
+# - Configure SSH is non-fatal (continue-on-error); ssh-add is re-checked and
+#   the deploy branches to a stage-only API fallback when no key is loaded
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   VM_SSH_PRIVATE_KEY, VM_SUDO_PASSWORD, VM_PORT, VM_USER,
 #   CALAGOPUS_API_KEY (panel signed-URL fallback),
 #   PLAYASIA_DISCORD_WEBHOOK (optional, empty = skip).
+#
+# All seven secrets exist on this fork (verified 2026-09-05). Deploy run #1
+# failed because the VM_SSH_PRIVATE_KEY VALUE does not parse ("error in
+# libcrypto" from ssh-add) — owner must re-import the key. While broken, the
+# job does NOT die at Configure SSH: it falls back to a signed-URL upload that
+# stages the binary at the volume root (pumpkin.staged-<ts>) and exits
+# non-zero so a partial deploy is never reported green.
 
 on:
   workflow_dispatch:
@@ -97,9 +106,25 @@ jobs:
           test -s "$ART_BIN" || { echo "ERROR: empty binary"; exit 1; }
 
       - name: Configure SSH
+        id: ssh
+        # run #1 (2026-09-05) died here: ssh-add failed 'error in libcrypto' (malformed
+        # VM_SSH_PRIVATE_KEY value). Never hard-fail before the fallback can run.
+        continue-on-error: true
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+
+      - name: Check SSH agent
+        id: sshcheck
+        run: |
+          set +e
+          if ssh-add -l >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "SSH agent ready (key loaded)"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "SSH agent has no usable key (ssh-add failed) — API fallback will stage the binary"
+          fi
 
       - name: Trust VM host key
         env:
@@ -120,6 +145,8 @@ jobs:
           set -euo pipefail
           PORT="${VM_PORT:-2222}"
           SID="${{ steps.target.outputs.sid }}"
+          if [ "${{ steps.sshcheck.outputs.available }}" = "true" ]; then
+          echo "== SSH path: scp + remote sudo install + smoke test =="
           set +e
           scp -P "$PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
             "$ART_BIN" "${VM_USER}@15.235.204.178:~/pumpkin.new" 2>&1 | tail -n 3
@@ -164,6 +191,81 @@ jobs:
           SSH_EXIT=${PIPESTATUS[1]:-1}
           echo "SSH deploy exit=$SSH_EXIT"
           exit $SSH_EXIT
+          fi
+
+          echo "== SSH unavailable — Calagopus API fallback (stage-only; never a silent green) =="
+          CALAGOPUS_PANEL="${CALAGOPUS_PANEL:-https://panel.playasia.online}"
+          # Deploy-start marker via API (telemetry; non-fatal).
+          python3 - <<'PYEOF' >/dev/null 2>&1 || true
+          import json, os, urllib.request, urllib.parse
+          sid = os.environ["SID"]; key = os.environ["CALAGOPUS_API_KEY"]; panel = os.environ["CALAGOPUS_PANEL"]
+          content = json.dumps({"bin": "pumpkin-staged", "by": "github-actions", "transport": "api-fallback"})
+          for path in ("/.signals/.deploy-notice-start.json", "/.deploy-notice-start.json"):
+              try:
+                  url = panel + "/api/client/servers/" + sid + "/files/write?" + urllib.parse.urlencode({"file": path})
+                  req = urllib.request.Request(url, data=content.encode(), method="PUT", headers={"Authorization": "Bearer " + key, "Content-Type": "text/plain"})
+                  urllib.request.urlopen(req, timeout=30); break
+              except Exception:
+                  pass
+          PYEOF
+          # Signed-URL upload straight into the server volume root.
+          TS=$(date -u +%Y%m%d%H%M%S)
+          STAGED="pumpkin.staged-$TS"
+          cp "$ART_BIN" "./$STAGED"
+          SIGNED=$(curl -sf -H "Authorization: Bearer $CALAGOPUS_API_KEY" "$CALAGOPUS_PANEL/api/client/servers/$SID/files/upload?directory=%2F") || { echo "::error::signed-URL request failed"; exit 1; }
+          UPLOAD_URL=$(printf '%s' "$SIGNED" | python3 -c 'import sys,json
+          d=json.load(sys.stdin)
+          def find(o):
+              if isinstance(o,str): return o if o.startswith("http") else None
+              if isinstance(o,dict):
+                  for v in o.values():
+                      r=find(v)
+                      if r: return r
+              if isinstance(o,list):
+                  for v in o:
+                      r=find(v)
+                      if r: return r
+              return None
+          print(find(d))')
+          [ -n "$UPLOAD_URL" ] || { echo "::error::could not extract signed upload URL"; exit 1; }
+          curl -sf -F "files=@./$STAGED" "${UPLOAD_URL}&directory=%2F" || { echo "::error::API upload failed"; exit 1; }
+          # Size verification (panel uploads truncate ~100MB; pumpkin nightly is ~13MB — mismatch = real error).
+          LOCAL_SIZE=$(stat -c%s "./$STAGED")
+          LIST_JSON=$(curl -sf -H "Authorization: Bearer $CALAGOPUS_API_KEY" "$CALAGOPUS_PANEL/api/client/servers/$SID/files/list?directory=%2F&per_page=100") || LIST_JSON=""
+          REMOTE_SIZE=$(LIST_JSON="$LIST_JSON" STAGED="$STAGED" python3 - <<'PYEOF'
+          import json, os
+          if not os.environ.get("LIST_JSON"):
+              print(""); raise SystemExit
+          d = json.loads(os.environ["LIST_JSON"]); name = os.environ["STAGED"]
+          def walk(o):
+              if isinstance(o, dict):
+                  if o.get("name") == name or o.get("attributes", {}).get("name") == name:
+                      yield o
+                  else:
+                      for v in o.values():
+                          yield from walk(v)
+              elif isinstance(o, list):
+                  for v in o:
+                      yield from walk(v)
+          for x in walk(d):
+              attr = x.get("attributes", x)
+              print(attr.get("size", "")); break
+          else:
+              print("")
+          PYEOF
+          )
+          if [ -z "$REMOTE_SIZE" ]; then
+            echo "::warning::staged file not found in volume listing — verify manually"
+          elif [ "$REMOTE_SIZE" != "$LOCAL_SIZE" ]; then
+            echo "::error::upload truncated: local=$LOCAL_SIZE remote=$REMOTE_SIZE"
+            exit 1
+          else
+            echo "upload verified: /$STAGED = $REMOTE_SIZE bytes"
+          fi
+          if [ -n "${PLAYASIA_DISCORD_WEBHOOK:-}" ]; then curl -sS -X POST -H "Content-Type: application/json" -d "{\"content\":\":warning: [Pumpkin ${{ inputs.target }}] SSH unavailable — binary STAGED at /$STAGED (install NOT done) by github-actions/${GITHUB_SHA:-unknown}\"}" "$PLAYASIA_DISCORD_WEBHOOK" || true; fi
+          echo "::error::SSH transport unavailable (ssh-add failure). Binary staged at /$STAGED in the volume — INSTALL NOT DONE."
+          echo "::error::Fix VM_SSH_PRIVATE_KEY (deploy run #1: 'error in libcrypto'; key re-import needed) and re-dispatch, or install manually via panel Files (rename /$STAGED over pumpkin.real, chmod 755, restart)."
+          exit 1
 
       - name: Fetch diagnostics
         if: always()
@@ -173,6 +275,10 @@ jobs:
           VM_USER: ${{ secrets.VM_USER }}
         run: |
           set +e
+          if ! ssh-add -l >/dev/null 2>&1; then
+            echo "SSH unavailable — skipping remote diagnostics (see deploy step for staged-binary note)"
+            exit 0
+          fi
           PORT="${VM_PORT:-2222}"
           mkdir -p diagnostics
           {
