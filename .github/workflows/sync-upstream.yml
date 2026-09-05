@@ -1,0 +1,90 @@
+name: Sync from upstream
+
+# Keeps the fork tracking Pumpkin-MC/Pumpkin (read-only mirror direction).
+# NEVER pushes or opens PRs upstream — this workflow only ever opens a PR
+# *inside* Aevienne/Pumpkin for review.
+#
+# Modes:
+# - manual (default): dispatch, optionally with a specific upstream ref
+# - scheduled: uncomment the cron line below for a weekly sync proposal
+#
+# Review checklist for a sync PR (upstream moves fast and breaks things —
+# e.g. the e393751 command-system rewrite that segfaulted our bridge via
+# struct drift):
+#   1. `crates/pumpkin-config/**`, `crates/pumpkin/src/server/**`,
+#      `crates/pumpkin/src/plugin/**` — any struct field add/remove/reorder
+#      changes Server/Context/config layouts: the PatchBukkit bridge reads
+#      these by offset and MUST be rebuilt (and its pin re-verified) first.
+#   2. `crates/pumpkin/src/command/**` — command-system changes break the
+#      bridge's command/machinery code at compile time (loud, cheap to catch).
+#   3. Egg-relevant: `egg-pumpkin.json`, default ports, config keys used by
+#      live `pumpkin.toml` files.
+#   4. Then: merge PR → build-linux runs → deploy to Pumpkin DEV only →
+#      verify bootstrap + conformance before touching [P] Lobby.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Upstream ref to sync from (branch, tag, or SHA; default: master)'
+        required: false
+        default: 'master'
+  # schedule:
+  #   - cron: '0 3 * * 1'  # weekly Monday 03:00 UTC proposal (disabled by default)
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream (read-only)
+        run: |
+          git remote add upstream https://github.com/Pumpkin-MC/Pumpkin.git 2>/dev/null || git remote set-url upstream https://github.com/Pumpkin-MC/Pumpkin.git
+          git fetch upstream "${{ inputs.ref || 'master' }}"
+
+      - name: Merge upstream into sync branch
+        id: merge
+        run: |
+          set -euo pipefail
+          UPSTREAM_REF="${{ inputs.ref || 'master' }}"
+          UPSTREAM_SHA=$(git rev-parse "upstream/$UPSTREAM_REF" 2>/dev/null || git rev-parse "$UPSTREAM_REF")
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "already=yes" >> "$GITHUB_OUTPUT"
+            echo "Fork already contains $UPSTREAM_SHA ($UPSTREAM_REF); nothing to do."
+            exit 0
+          fi
+          BRANCH="sync/upstream-$UPSTREAM_REF-$(date -u +%Y%m%d)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+          if git merge --no-edit "upstream/$UPSTREAM_REF" 2>/dev/null || git merge --no-edit "$UPSTREAM_SHA"; then
+            echo "conflicts=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflicts=yes" >> "$GITHUB_OUTPUT"
+          fi
+          git push -u origin "$BRANCH" --force-with-lease || git push -u origin "$BRANCH"
+
+      - name: Open sync PR
+        if: steps.merge.outputs.already != 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ steps.merge.outputs.conflicts }}" = "yes" ]; then
+            CONFLICT_NOTE=":warning: **Merge conflicts** — resolve by hand before merging (see review checklist in the workflow file)."
+          else
+            CONFLICT_NOTE="Clean merge, no conflicts."
+          fi
+          gh pr create --base master --head "${{ steps.merge.outputs.branch }}" \
+            --title "Sync from upstream (${{ inputs.ref || 'master' }} @ ${{ steps.merge.outputs.upstream_sha }})" \
+            --body "Read-only sync from \`Pumpkin-MC/Pumpkin\`. $CONFLICT_NOTE" \
+            || echo "PR already exists or creation failed (check Actions log)"
