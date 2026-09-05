@@ -88,3 +88,37 @@ jobs:
             --title "Sync from upstream (${{ inputs.ref || 'master' }} @ ${{ steps.merge.outputs.upstream_sha }})" \
             --body "Read-only sync from \`Pumpkin-MC/Pumpkin\`. $CONFLICT_NOTE" \
             || echo "PR already exists or creation failed (check Actions log)"
+
+      - name: Compat report (auto-gates)
+        if: steps.merge.outputs.already != 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # On the sync branch, `master...HEAD` is exactly the incoming
+          # upstream range (the fork holds no code changes, so there is
+          # nothing of ours to overlap — merge conflicts already answered
+          # that). Two gates decide the lane:
+          # Gate 1 — layout chain touched? These paths decide Server/Context/
+          # config memory layout, which the PatchBukkit bridge reads by
+          # offset. Empty = new binary is layout-identical = fast-track
+          # (deploy binary, bridge untouched). Non-empty = rebuild bridge
+          # against the new rev FIRST (see AI_WORKFLOW_GUIDE §7).
+          CHAIN="crates/pumpkin-config crates/pumpkin/src/server crates/pumpkin/src/plugin"
+          # shellcheck disable=SC2086
+          DRIFT=$(git diff --name-only "master...${{ steps.merge.outputs.branch }}" -- $CHAIN || true)
+          # Gate 2 — Rust code touched at all? Empty = binary-identical =
+          # nothing to rebuild or deploy (build-linux path filters skip CI
+          # too, so no build even runs).
+          RUST=$(git diff --name-only "master...${{ steps.merge.outputs.branch }}" -- 'crates/**' 'Cargo.toml' 'Cargo.lock' 'rust-toolchain.toml' || true)
+          {
+            echo "## Auto compat report"
+            echo ""
+            if [ -z "$DRIFT" ]; then echo "- Layout chain: UNCHANGED → bridge stays compatible, fast-track OK"; else echo "- Layout chain: CHANGED → rebuild bridge first:"; echo "$DRIFT" | sed 's/^/  - /'; fi
+            if [ -z "$RUST" ]; then echo "- Rust code: UNCHANGED → binary-identical, nothing to rebuild or deploy"; else echo "- Rust code changed → rebuild + deploy binary after checks"; fi
+          } > /tmp/compat-report.md
+          cat /tmp/compat-report.md
+          PR=$(gh pr list --base master --head "${{ steps.merge.outputs.branch }}" --json number --jq '.[0].number' || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/compat-report.md || true
+          fi
