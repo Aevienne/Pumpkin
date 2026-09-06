@@ -1,15 +1,16 @@
-use crate::argument_types::FromStringReader;
-use crate::argument_types::argument_type::{ArgumentType, JavaClientArgumentType};
-use crate::context::command_context::CommandContext;
-use crate::errors::command_syntax_error::CommandSyntaxError;
-use crate::string_reader::StringReader;
-use crate::suggestion::suggestions::{Suggestions, SuggestionsBuilder};
+use pumpkin_command::argument_types::FromStringReader;
+use pumpkin_command::argument_types::argument_type::{ArgumentType, JavaClientArgumentType};
+use pumpkin_command::context::command_context::CommandContext;
+use pumpkin_command::errors::command_syntax_error::CommandSyntaxError;
+use pumpkin_command::source::CommandSource;
+use pumpkin_command::string_reader::StringReader;
+use pumpkin_command::suggestion::suggestions::{Suggestions, SuggestionsBuilder};
 use pumpkin_protocol::java::client::play::SuggestionProviders;
 use pumpkin_util::identifier::Identifier;
 
 pub struct PoolNameArgumentType;
 
-impl<S: crate::source::CommandSource> ArgumentType<S> for PoolNameArgumentType {
+impl<S: CommandSource> ArgumentType<S> for PoolNameArgumentType {
     type Item = Identifier;
 
     fn parse(&self, reader: &mut StringReader) -> Result<Self::Item, CommandSyntaxError> {
