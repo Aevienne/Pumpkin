@@ -3356,6 +3356,7 @@ dependencies = [
  "ordered-float",
  "postcard",
  "pumpkin-codecs",
+ "pumpkin-command",
  "pumpkin-config",
  "pumpkin-data",
  "pumpkin-gametest",
@@ -3433,6 +3434,25 @@ dependencies = [
  "serde_repr",
  "syn 3.0.5",
  "wit-encoder",
+]
+
+[[package]]
+name = "pumpkin-command"
+version = "0.1.0+26.2-26.45"
+dependencies = [
+ "itertools 0.15.0",
+ "pumpkin-codecs",
+ "pumpkin-data",
+ "pumpkin-nbt",
+ "pumpkin-protocol",
+ "pumpkin-util",
+ "pumpkin-world",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
