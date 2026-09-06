@@ -22,7 +22,7 @@ impl<S: crate::source::CommandSource> ArgumentType<S> for PlacedFeatureNameArgum
         _context: &CommandContext<S>,
         builder: SuggestionsBuilder,
     ) -> Suggestions {
-        let names = pumpkin_world::generation::feature::placed_features::all_placed_feature_names();
+        let names = pumpkin_data::placed_feature::PlacedFeature::all_names();
         builder
             .filter_and_suggest_iter(names.iter().copied())
             .build()

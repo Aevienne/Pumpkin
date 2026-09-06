@@ -10,7 +10,6 @@ pumpkin-util.workspace = true
 pumpkin-protocol = { workspace = true, features = ["default"] }
 pumpkin-data = { workspace = true, features = ["default"] }
 pumpkin-nbt.workspace = true
-pumpkin-world.workspace = true
 pumpkin-codecs.workspace = true
 
 uuid.workspace = true

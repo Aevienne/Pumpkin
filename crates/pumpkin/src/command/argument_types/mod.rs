@@ -16,5 +16,7 @@ pub mod entity_anchor;
 pub mod entity_selector;
 pub mod game_profile;
 pub mod objective;
+pub mod pool;
 pub mod resource_key;
 pub mod team;
+pub mod template;

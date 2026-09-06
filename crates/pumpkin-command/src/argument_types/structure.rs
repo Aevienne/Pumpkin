@@ -21,7 +21,7 @@ impl<S: crate::source::CommandSource> ArgumentType<S> for StructureNameArgumentT
         _context: &CommandContext<S>,
         builder: SuggestionsBuilder,
     ) -> Suggestions {
-        let names = pumpkin_world::generation::structure::template::all_structure_names();
+        let names = pumpkin_data::structures::StructureKeys::all_names();
         builder
             .filter_and_suggest_iter(names.iter().copied())
             .build()
