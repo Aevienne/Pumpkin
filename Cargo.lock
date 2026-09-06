@@ -3355,7 +3355,6 @@ dependencies = [
  "num-bigint 0.5.1",
  "ordered-float",
  "postcard",
- "pumpkin-codecs",
  "pumpkin-command",
  "pumpkin-config",
  "pumpkin-data",
@@ -3440,16 +3439,13 @@ dependencies = [
 name = "pumpkin-command"
 version = "0.1.0+26.2-26.45"
 dependencies = [
- "itertools 0.15.0",
  "pumpkin-codecs",
  "pumpkin-data",
  "pumpkin-nbt",
  "pumpkin-protocol",
  "pumpkin-util",
  "rustc-hash",
- "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tracing",
  "uuid",
 ]
