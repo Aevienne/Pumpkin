@@ -46,14 +46,38 @@ on:
         required: false
         type: boolean
         default: false
+  # Optional auto-chain: fires when "Build Linux server" completes on master,
+  # but the deploy job below only runs when explicitly opted in (repo Variable
+  # AUTO_DEPLOY_PUMPKIN=true, or head commit message contains [deploy]).
+  # Manual dispatch always runs. See job `if:` gate.
+  workflow_run:
+    workflows:
+      - Build Linux server
+    types:
+      - completed
+    branches:
+      - master
 
 concurrency:
-  group: deploy-pumpkin-${{ inputs.target }}
+  group: deploy-pumpkin-${{ inputs.target || 'pumpkin-dev' }}
   cancel-in-progress: false
 
 jobs:
   deploy:
+    # Manual dispatch: always run. Auto-chain: only on build success + opt-in.
+    # Opt-in = repo Settings → Variables → Actions → AUTO_DEPLOY_PUMPKIN=true,
+    # or include [deploy] in the build commit message. Auto-chain always runs
+    # the 90s smoke test (skip_test is dispatch-only).
+    # Human gate: add a required reviewer on the `pumpkin-dev` / `p-lobby`
+    # GitHub Environments to make every auto-deploy pause for one click
+    # (Settings → Environments). Until then the Variable/trailer is the gate.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (vars.AUTO_DEPLOY_PUMPKIN == 'true' ||
+        contains(github.event.workflow_run.head_commit.message, '[deploy]')))
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target || 'pumpkin-dev' }}
     permissions:
       contents: read
       actions: read
@@ -64,12 +88,15 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          # Dispatch: inputs.ref. Auto-chain: the exact commit that just built.
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
 
       - name: Resolve target
         id: target
         run: |
-          case "${{ inputs.target }}" in
+          # Dispatch: inputs.target. Auto-chain: pumpkin-dev only (p-lobby stays manual).
+          TARGET="${{ inputs.target || 'pumpkin-dev' }}"
+          case "$TARGET" in
             pumpkin-dev)
               echo "sid=0663eb80-d3b8-45bd-86b1-579098d1f653" >> "$GITHUB_OUTPUT"
               echo "port=25553" >> "$GITHUB_OUTPUT"
@@ -88,7 +115,8 @@ jobs:
           workflow: build-linux.yml
           workflow_search: true
           workflow_conclusion: success
-          branch: ${{ inputs.ref }}
+          # Dispatch: inputs.ref. Auto-chain: the branch that just built.
+          branch: ${{ inputs.ref || github.event.workflow_run.head_branch }}
           name: pumpkin-linux-*
           name_is_regexp: true
           path: artifact
