@@ -3943,28 +3943,10 @@ impl World {
         // Sends initial scoreboard state
         player.send_scoreboard();
 
-        let (spawn_block_pos, yaw, pitch) = {
-            let level_info_lock = self.level_info.load();
-            (
-                BlockPos::new(
-                    level_info_lock.spawn_x,
-                    level_info_lock.spawn_y,
-                    level_info_lock.spawn_z,
-                ),
-                level_info_lock.spawn_yaw,
-                level_info_lock.spawn_pitch,
-            )
-        };
-
-        client
-            .send_packet(&CPlayerSpawnPosition::new(
-                spawn_block_pos,
-                yaw,
-                pitch,
-                self.dimension.minecraft_name.to_owned(),
-            ))
-            .await;
-
+        // NOTE: the default-spawn packet used to be sent here, mid-join. It now
+        // goes out after the join broadcast below: clients (and client mods)
+        // need their level reckoned before they can handle it, and the awaits
+        // above (chunks, recipes, inventory, effects) give them that time.
         // Send initial weather state
         let (is_raining, rain_level, thunder_level) = {
             let weather = self
@@ -4041,6 +4023,29 @@ impl World {
             // TODO: Switch to structured logging, e.g. info!(player = %name, "connected")
             info!("{}", event.join_message.to_pretty_console());
         }
+
+        // Send the default spawn position last: the client must have reckoned
+        // its level (chunks, teleport acks) before mods touch this packet.
+        let (spawn_block_pos, spawn_yaw, spawn_pitch) = {
+            let level_info_lock = self.level_info.load();
+            (
+                BlockPos::new(
+                    level_info_lock.spawn_x,
+                    level_info_lock.spawn_y,
+                    level_info_lock.spawn_z,
+                ),
+                level_info_lock.spawn_yaw,
+                level_info_lock.spawn_pitch,
+            )
+        };
+        client
+            .send_packet(&CPlayerSpawnPosition::new(
+                spawn_block_pos,
+                spawn_yaw,
+                spawn_pitch,
+                self.dimension.minecraft_name.to_owned(),
+            ))
+            .await;
     }
 
     fn send_player_equipment(&self, from: &Player) {
