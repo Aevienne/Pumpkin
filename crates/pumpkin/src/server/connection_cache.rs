@@ -202,9 +202,13 @@ impl CachedStatus {
         };
 
         StatusResponse {
+            // Report our own version (vanilla parity). An earlier
+            // "{LOWEST}-{CURRENT}" name confused version sniffers (e.g. ViaVersion's
+            // backend detector resolved us as 1.7 and broke proxied logins), and the
+            // LOWEST protocol fallback did the same for version-less (-1) pings.
             version: Some(Version {
-                name: format!("{LOWEST_SUPPORTED_MC_VERSION}-{CURRENT_MC_VERSION}"),
-                protocol: LOWEST_SUPPORTED_MC_VERSION.protocol_version() as u32,
+                name: CURRENT_MC_VERSION.to_string(),
+                protocol: CURRENT_MC_VERSION.protocol_version() as u32,
             }),
             players: Some(Players {
                 max: max_players,
