@@ -4024,28 +4024,10 @@ impl World {
             info!("{}", event.join_message.to_pretty_console());
         }
 
-        // Send the default spawn position last: the client must have reckoned
-        // its level (chunks, teleport acks) before mods touch this packet.
-        let (spawn_block_pos, spawn_yaw, spawn_pitch) = {
-            let level_info_lock = self.level_info.load();
-            (
-                BlockPos::new(
-                    level_info_lock.spawn_x,
-                    level_info_lock.spawn_y,
-                    level_info_lock.spawn_z,
-                ),
-                level_info_lock.spawn_yaw,
-                level_info_lock.spawn_pitch,
-            )
-        };
-        client
-            .send_packet(&CPlayerSpawnPosition::new(
-                spawn_block_pos,
-                spawn_yaw,
-                spawn_pitch,
-                self.dimension.minecraft_name.to_owned(),
-            ))
-            .await;
+        // DIAGNOSTIC BUILD ONLY: default-spawn packet suppressed entirely to
+        // isolate the Xaero WorldMap NPE. If modded joins survive without it, the
+        // packet's presence/timing is the trigger; if they still fail, look
+        // elsewhere. Never merge this to master.
     }
 
     fn send_player_equipment(&self, from: &Player) {
