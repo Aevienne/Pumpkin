@@ -31,13 +31,18 @@ impl JavaClient {
 
         match result {
             TeleportResult::Success => {}
+            // Vanilla parity: stale or unsolicited teleport confirms (common with
+            // proxied/translated clients such as Geyser, and with back-to-back join
+            // teleports) must not kill the session. The client's real position
+            // resyncs through normal movement packets anyway.
             TeleportResult::WrongId => {
-                self.try_kick(&TextComponent::text("Wrong teleport id"));
+                tracing::warn!(
+                    "Ignoring stale teleport confirm id {}",
+                    confirm_teleport.teleport_id.0
+                );
             }
             TeleportResult::NotTeleporting => {
-                self.try_kick(&TextComponent::text(
-                    "Send Teleport confirm, but we did not teleport",
-                ));
+                tracing::warn!("Ignoring unsolicited teleport confirm");
             }
         }
     }
