@@ -21,6 +21,11 @@ on:
         description: 'Tag to release (default: nightly)'
         required: false
         default: 'nightly'
+      thin:
+        description: 'Fast iteration build (thin LTO + 16 codegen units, NOT for blessed releases)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -37,6 +42,10 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Pinned so sccache keys stay stable across runs (unpinned `stable`
+          # drifts and cold-builds everything). Bump deliberately.
+          toolchain: 1.98.1
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -55,7 +64,14 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
         run: |
+          # Iteration builds (thin=true, dispatch only) trade a little runtime
+          # for a much faster fat-LTO link. Blessed releases keep full profile.
+          if [ "${{ inputs.thin }}" = "true" ]; then
+            export CARGO_PROFILE_RELEASE_LTO=thin
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+          fi
           cargo build --release --locked -p pumpkin --verbose
+          sccache --show-stats || true
           mkdir -p dist
           cp target/release/pumpkin dist/pumpkin-x86_64-linux
           chmod +x dist/pumpkin-x86_64-linux
