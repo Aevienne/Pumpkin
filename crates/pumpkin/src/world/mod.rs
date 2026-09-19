@@ -4509,6 +4509,9 @@ impl World {
             ))
             .await;
 
+        // DIAGNOSTIC: tag every remaining default-spawn emit so a join crash
+        // can be attributed to an exact site.
+        tracing::warn!("spawnpos-emit: respawn-flow");
         // Inform the client of the default spawn position so the client doesn't
         // fall back to (0, 2, 0) while the world reloads (fixes rubberbanding).
         // This must be sent after the CRespawn packet for proper client positioning.
