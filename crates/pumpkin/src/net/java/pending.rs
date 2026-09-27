@@ -322,6 +322,11 @@ impl PendingConnection {
 
         match packet.id {
             id if id == pumpkin_protocol::java::server::login::SLoginStart::to_id(version) => {
+                debug!(
+                    "Reading Login Start: protocol {:?}, payload bytes {}",
+                    version,
+                    packet.payload.len()
+                );
                 Ok(self
                     .handle_login_start(
                         server,

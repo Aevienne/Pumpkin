@@ -15,7 +15,12 @@ impl PendingConnection {
         self.version
             .store(JavaMinecraftVersion::from_protocol(version));
 
-        debug!("Handshake: next state is {:?}", &handshake.next_state);
+        debug!(
+            "Handshake: client protocol {} resolved to {:?}; next state is {:?}",
+            version,
+            self.version.load(),
+            &handshake.next_state
+        );
         self.connection_state.store(handshake.next_state);
         if self.connection_state.load() != ConnectionState::Status {
             let protocol = version;
