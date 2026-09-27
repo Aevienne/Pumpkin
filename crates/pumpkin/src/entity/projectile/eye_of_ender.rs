@@ -218,7 +218,8 @@ impl EntityBase for EyeOfEnder {
             client.try_enqueue_packet(data);
         }
 
-        if client.version.load() >= pumpkin_util::version::JavaMinecraftVersion::V_1_21 {
+        let version = client.packet_encoding_version();
+        if version >= pumpkin_util::version::JavaMinecraftVersion::V_1_21 {
             let metadata = Metadata::new(
                 pumpkin_data::tracked_data::eye_of_ender::ITEM_STACK,
                 ItemStackSerializer::from(
@@ -229,7 +230,7 @@ impl EntityBase for EyeOfEnder {
                 ),
             );
             let mut data = Vec::new();
-            if metadata.write(&mut data, &client.version.load()).is_ok() {
+            if metadata.write(&mut data, &version).is_ok() {
                 data.push(255);
                 let meta_packet = pumpkin_protocol::java::client::play::CSetEntityMetadata::new(
                     self.entity.entity_id.into(),

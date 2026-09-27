@@ -346,7 +346,7 @@ impl EntityBase for ItemFrameEntity {
             client.try_enqueue_packet(data);
         }
 
-        let ver = client.version.load();
+        let ver = client.packet_encoding_version();
         if ver >= JavaMinecraftVersion::V_1_21 {
             let item_serializer = ItemStackSerializer::from(
                 self.item_stack

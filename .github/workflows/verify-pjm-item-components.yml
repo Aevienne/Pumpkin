@@ -24,7 +24,13 @@ on:
       - "crates/pumpkin/src/plugin/loader/wasm/wasm_host/wit/v0_1/events/server.rs"
       - "crates/pumpkin-plugin-wit/v0.1/event.wit"
       - "crates/pumpkin/src/server/connection_cache.rs"
+      - "crates/pumpkin/src/entity/mod.rs"
+      - "crates/pumpkin/src/entity/item.rs"
+      - "crates/pumpkin/src/entity/decoration/item_frame.rs"
+      - "crates/pumpkin/src/entity/projectile/eye_of_ender.rs"
       - "crates/pumpkin/src/world/mod.rs"
+      - "crates/pumpkin/src/world/entity_tracker.rs"
+      - "crates/pumpkin/src/plugin/loader/wasm/wasm_host/wit/v0_1/player.rs"
       - "tools/pumpkin-codegen/src/item.rs"
       - ".github/workflows/verify-pjm-item-components.yml"
   workflow_dispatch:
@@ -74,7 +80,13 @@ jobs:
           crates/pumpkin/src/plugin/api/events/server/protocol_packet.rs
           crates/pumpkin/src/plugin/loader/wasm/wasm_host/wit/v0_1/events/server.rs
           crates/pumpkin/src/server/connection_cache.rs
+          crates/pumpkin/src/entity/mod.rs
+          crates/pumpkin/src/entity/item.rs
+          crates/pumpkin/src/entity/decoration/item_frame.rs
+          crates/pumpkin/src/entity/projectile/eye_of_ender.rs
           crates/pumpkin/src/world/mod.rs
+          crates/pumpkin/src/world/entity_tracker.rs
+          crates/pumpkin/src/plugin/loader/wasm/wasm_host/wit/v0_1/player.rs
           tools/pumpkin-codegen/src/item.rs
 
       - name: Test affected packages

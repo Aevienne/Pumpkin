@@ -441,7 +441,7 @@ pub trait EntityBase: Send + Sync + std::any::Any {
 
     fn send_java_spawn_packet(&self, client: &JavaClient) {
         let entity = self.get_entity();
-        let version = client.version.load();
+        let version = client.packet_encoding_version();
         let metadata = self.java_spawn_metadata(version);
         let spawn_packet = entity.create_spawn_packet();
         if let Ok(data) = client.serialize_packet(&spawn_packet) {
@@ -2900,19 +2900,24 @@ impl Entity {
             World::collect_java_recipients_by_version(java_recipients.into_iter());
 
         for (version, recipients) in recipients_by_version {
-            if version < JavaMinecraftVersion::V_1_21 {
+            let packet_version = recipients
+                .first()
+                .map_or(version, |client| client.packet_encoding_version());
+            if packet_version < JavaMinecraftVersion::V_1_21 {
                 continue;
             }
             let mut buf = Vec::new();
             for m in meta {
-                let _ = m.write(&mut buf, &version);
+                let _ = m.write(&mut buf, &packet_version);
             }
             if buf.is_empty() {
                 continue;
             }
             buf.put_u8(255);
             let packet = CSetEntityMetadata::new(self.entity_id.into(), buf.into());
-            if let Ok(packet_data) = JavaClient::serialize_packet_for_version(&packet, version) {
+            if let Ok(packet_data) =
+                JavaClient::serialize_packet_for_version(&packet, packet_version)
+            {
                 for recipient in recipients {
                     recipient.try_enqueue_packet(packet_data.clone());
                 }
@@ -2957,9 +2962,13 @@ impl Entity {
             World::collect_java_recipients_by_version(java_recipients.into_iter());
 
         for (version, recipients) in recipients_by_version {
-            if let Some(buf) = self.synched_data.pack_dirty_for_version(&version) {
+            let packet_version = recipients
+                .first()
+                .map_or(version, |client| client.packet_encoding_version());
+            if let Some(buf) = self.synched_data.pack_dirty_for_version(&packet_version) {
                 let packet = CSetEntityMetadata::new(self.entity_id.into(), buf);
-                if let Ok(packet_data) = JavaClient::serialize_packet_for_version(&packet, version)
+                if let Ok(packet_data) =
+                    JavaClient::serialize_packet_for_version(&packet, packet_version)
                 {
                     for recipient in recipients {
                         recipient.try_enqueue_packet(packet_data.clone());
@@ -2991,12 +3000,16 @@ impl Entity {
             World::collect_java_recipients_by_version(java_recipients.into_iter());
 
         for (version, recipients) in recipients_by_version {
+            let packet_version = recipients
+                .first()
+                .map_or(version, |client| client.packet_encoding_version());
             if let Some(buf) = self
                 .synched_data
-                .get_non_default_values_for_version(&version)
+                .get_non_default_values_for_version(&packet_version)
             {
                 let packet = CSetEntityMetadata::new(self.entity_id.into(), buf);
-                if let Ok(packet_data) = JavaClient::serialize_packet_for_version(&packet, version)
+                if let Ok(packet_data) =
+                    JavaClient::serialize_packet_for_version(&packet, packet_version)
                 {
                     for recipient in recipients {
                         recipient.try_enqueue_packet(packet_data.clone());

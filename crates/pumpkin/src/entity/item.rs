@@ -755,7 +755,8 @@ impl EntityBase for ItemEntity {
             client.try_enqueue_packet(data);
         }
 
-        if client.version.load() >= JavaMinecraftVersion::V_1_21 {
+        let version = client.packet_encoding_version();
+        if version >= JavaMinecraftVersion::V_1_21 {
             let metadata = Metadata::new(
                 pumpkin_data::tracked_data::item::ITEM,
                 ItemStackSerializer::from(
@@ -766,7 +767,7 @@ impl EntityBase for ItemEntity {
                 ),
             );
             let mut data = Vec::new();
-            if metadata.write(&mut data, &client.version.load()).is_ok() {
+            if metadata.write(&mut data, &version).is_ok() {
                 data.push(255);
                 let meta_packet =
                     CSetEntityMetadata::new(self.entity.entity_id.into(), data.into());

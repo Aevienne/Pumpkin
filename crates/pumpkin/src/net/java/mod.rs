@@ -88,6 +88,7 @@ pub(crate) struct ProtocolPacketEventOutput {
 pub struct JavaClient {
     pub id: u64,
     pub version: AtomicCell<JavaMinecraftVersion>,
+    protocol_translator_active: bool,
     /// The client's game profile information. Direct field (lock-free).
     pub gameprofile: GameProfile,
     /// The client's configuration settings. Lock-free `ArcSwap`.
@@ -155,6 +156,37 @@ struct OutgoingPacket {
 }
 
 const MAX_FRAME_BATCH_DATA_SIZE: usize = MAX_PACKET_SIZE as usize;
+
+#[must_use]
+fn packet_serialization_version(
+    client_version: JavaMinecraftVersion,
+    protocol_translator_active: bool,
+) -> JavaMinecraftVersion {
+    if protocol_translator_active {
+        CURRENT_MC_VERSION
+    } else {
+        client_version
+    }
+}
+
+#[cfg(test)]
+mod packet_serialization_version_tests {
+    use super::packet_serialization_version;
+    use pumpkin_data::packet::CURRENT_MC_VERSION;
+    use pumpkin_util::version::JavaMinecraftVersion;
+
+    #[test]
+    fn translator_receives_native_layout_while_normal_clients_keep_their_version() {
+        assert_eq!(
+            packet_serialization_version(JavaMinecraftVersion::V_1_16_2, true),
+            CURRENT_MC_VERSION
+        );
+        assert_eq!(
+            packet_serialization_version(JavaMinecraftVersion::V_1_16_2, false),
+            JavaMinecraftVersion::V_1_16_2
+        );
+    }
+}
 
 fn take_frame_batch(packets: &mut VecDeque<OutgoingPacket>) -> Vec<OutgoingPacket> {
     let mut batch = Vec::new();
@@ -475,6 +507,7 @@ impl JavaClient {
 
         Self {
             id: pending.id,
+            protocol_translator_active: false,
             gameprofile,
             config: ArcSwap::from_pointee(config),
             server_address: pending.server_address,
@@ -967,7 +1000,8 @@ impl JavaClient {
         pumpkin_protocol::java::packet_encoder::write_packet(packet, &version, write)
     }
 
-    // TODO: translator active -> `CURRENT_MC_VERSION` (multiversion plugin parses 26.3).
+    /// Serializes using the explicitly requested protocol layout. Per-client
+    /// sends should use [`JavaClient::serialize_packet`].
     pub fn serialize_packet_for_version<P: ClientPacket>(
         packet: &P,
         version: JavaMinecraftVersion,
@@ -987,7 +1021,12 @@ impl JavaClient {
     }
 
     pub fn serialize_packet<P: ClientPacket>(&self, packet: &P) -> Result<Bytes, WritingError> {
-        Self::serialize_packet_for_version(packet, self.version.load())
+        Self::serialize_packet_for_version(packet, self.packet_encoding_version())
+    }
+
+    #[must_use]
+    pub(crate) fn packet_encoding_version(&self) -> JavaMinecraftVersion {
+        packet_serialization_version(self.version.load(), self.protocol_translator_active)
     }
 
     pub fn try_send_packet<P: ClientPacket>(&self, packet: &P) {
@@ -1013,7 +1052,7 @@ impl JavaClient {
         packet: &P,
         write: impl Write,
     ) -> Result<(), WritingError> {
-        Self::write_packet_for_version(packet, self.version.load(), write)
+        Self::write_packet_for_version(packet, self.packet_encoding_version(), write)
     }
 
     /// Handles an incoming packet, routing it to the appropriate handler based on the current connection state.
@@ -1028,6 +1067,11 @@ impl JavaClient {
     #[expect(clippy::too_many_lines)]
     pub fn start_outgoing_packet_task(&mut self, server: &Arc<Server>) {
         const MAX_BATCH_SIZE: usize = 64;
+
+        // Multi-version protocol handlers consume packets in Pumpkin's native
+        // layout and rewrite them before they reach the client.
+        self.protocol_translator_active =
+            server.plugin_manager.has_handlers::<ProtocolPacketEvent>();
 
         let Some(mut packet_receiver) = self.outgoing_packet_queue_recv.take() else {
             return;

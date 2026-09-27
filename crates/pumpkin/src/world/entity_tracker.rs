@@ -460,7 +460,7 @@ impl TrackedEntity {
             let target_id = target_entity.entity_id;
 
             if let ClientPlatform::Java(client) = player.client.as_ref() {
-                let version = client.version.load();
+                let version = client.packet_encoding_version();
                 let mut buf = Vec::new();
                 for meta in [
                     Metadata::new(
@@ -517,7 +517,7 @@ impl TrackedEntity {
         }
 
         if let ClientPlatform::Java(client) = player.client.as_ref() {
-            let version = client.version.load();
+            let version = client.packet_encoding_version();
             if let Some(non_default) = self
                 .entity
                 .get_entity()

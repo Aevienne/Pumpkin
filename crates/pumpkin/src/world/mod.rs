@@ -983,7 +983,11 @@ impl World {
         recipients_by_version: BTreeMap<JavaMinecraftVersion, Vec<&JavaClient>>,
     ) {
         for (version, recipients) in recipients_by_version {
-            let packet_data = match JavaClient::serialize_packet_for_version(packet, version) {
+            let packet_version = recipients
+                .first()
+                .map_or(version, |client| client.packet_encoding_version());
+            let packet_data = match JavaClient::serialize_packet_for_version(packet, packet_version)
+            {
                 Ok(packet_data) => packet_data,
                 Err(pumpkin_protocol::ser::WritingError::UnsupportedVersion(_)) => {
                     continue;
@@ -992,7 +996,7 @@ impl World {
                     error!(
                         "Failed to serialize packet {} for version {:?}: {}",
                         std::any::type_name::<P>(),
-                        version,
+                        packet_version,
                         err
                     );
                     continue;
@@ -1231,7 +1235,10 @@ impl World {
             Self::collect_java_recipients_by_version(java_recipients.into_iter());
 
         for (version, recipients) in recipients_by_version {
-            if version < JavaMinecraftVersion::V_1_21 {
+            let packet_version = recipients
+                .first()
+                .map_or(version, |client| client.packet_encoding_version());
+            if packet_version < JavaMinecraftVersion::V_1_21 {
                 continue;
             }
             let mut buf = Vec::new();
@@ -1245,11 +1252,13 @@ impl World {
                     skin_parts,
                 ),
             ] {
-                let _ = meta.write(&mut buf, &version);
+                let _ = meta.write(&mut buf, &packet_version);
             }
             buf.put_u8(255);
             let packet = CSetEntityMetadata::new(entity_id.into(), buf.into());
-            if let Ok(packet_data) = JavaClient::serialize_packet_for_version(&packet, version) {
+            if let Ok(packet_data) =
+                JavaClient::serialize_packet_for_version(&packet, packet_version)
+            {
                 for recipient in recipients {
                     recipient.try_enqueue_packet(packet_data.clone());
                 }
@@ -3216,22 +3225,21 @@ impl World {
 
             client_suggestions::send_c_commands_packet(player, server, &command_dispatcher);
         };
-        if client.version.load() < JavaMinecraftVersion::V_1_20_2
-            && client.version.load() >= JavaMinecraftVersion::V_1_13
+        let client_version = client.version.load();
+        if client_version < JavaMinecraftVersion::V_1_20_2
+            && client_version >= JavaMinecraftVersion::V_1_13
         {
-            let version = client.version.load();
+            let packet_version = client.packet_encoding_version();
             let mut tags = Vec::new();
             for &key in pumpkin_data::tag::RegistryKey::NETWORK_KEYS {
-                if pumpkin_data::tag::get_registry_key_tags(version, key)
+                if pumpkin_data::tag::get_registry_key_tags(packet_version, key)
                     .is_some_and(|map| !map.is_empty())
                 {
                     tags.push(key);
                 }
             }
             let packet = pumpkin_protocol::java::client::play::CUpdateTagsPlay::new(&tags);
-            if let Ok(packet_data) = JavaClient::serialize_packet_for_version(&packet, version) {
-                client.send_packet_now(packet_data).await;
-            }
+            client.send_packet(&packet).await;
         }
 
         let (position, yaw, pitch) = if player.has_played_before.load(Ordering::Relaxed) {
@@ -3491,7 +3499,8 @@ impl World {
                 player.client.try_enqueue_packet_editioned(java, bedrock);
             });
 
-            if client.version.load() >= JavaMinecraftVersion::V_1_21 {
+            let packet_version = client.packet_encoding_version();
+            if packet_version >= JavaMinecraftVersion::V_1_21 {
                 let config = existing_player.config.load();
                 let mut buf = Vec::new();
                 {
@@ -3499,14 +3508,14 @@ impl World {
                         pumpkin_data::tracked_data::player::PLAYER_MODE_CUSTOMISATION,
                         config.skin_parts,
                     );
-                    let _ = meta.write(&mut buf, &client.version.load());
+                    let _ = meta.write(&mut buf, &packet_version);
                 };
                 {
                     let meta = Metadata::new(
                         pumpkin_data::tracked_data::player::PLAYER_MODE_CUSTOMIZATION_ID,
                         config.skin_parts,
                     );
-                    let _ = meta.write(&mut buf, &client.version.load());
+                    let _ = meta.write(&mut buf, &packet_version);
                 };
                 drop(config);
                 // END
