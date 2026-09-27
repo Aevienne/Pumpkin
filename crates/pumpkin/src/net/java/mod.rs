@@ -89,6 +89,7 @@ pub struct JavaClient {
     pub id: u64,
     pub version: AtomicCell<JavaMinecraftVersion>,
     protocol_translator_active: bool,
+    clientbound_diagnostic_trace_packets: AtomicUsize,
     /// The client's game profile information. Direct field (lock-free).
     pub gameprofile: GameProfile,
     /// The client's configuration settings. Lock-free `ArcSwap`.
@@ -340,6 +341,31 @@ async fn apply_packet_sent_events(
             continue;
         };
         let mut payload = Bytes::copy_from_slice(encoded);
+        let packet_state = player
+            .as_ref()
+            .and_then(|player| match player.client.as_ref() {
+                ClientPlatform::Java(client) => Some(client.connection_state.load()),
+                ClientPlatform::Bedrock(_) => None,
+            })
+            .unwrap_or(state);
+        let source_packet_id = packet_id;
+        let source_payload_len = payload.len();
+        let trace_sequence =
+            if version == JavaMinecraftVersion::V_1_16_2 && packet_state == ConnectionState::Play {
+                player
+                    .as_ref()
+                    .and_then(|player| match player.client.as_ref() {
+                        ClientPlatform::Java(client) if client.protocol_translator_active => {
+                            let sequence = client
+                                .clientbound_diagnostic_trace_packets
+                                .fetch_add(1, Ordering::Relaxed);
+                            (sequence < 24).then_some(sequence + 1)
+                        }
+                        _ => None,
+                    })
+            } else {
+                None
+            };
 
         // Preserve the public PacketSentEvent behavior for plugins that still use it.
         if let Some(player) = player.as_ref() {
@@ -347,6 +373,20 @@ async fn apply_packet_sent_events(
                 .fire_packet_sent_event_no_obj(packet_id, payload.clone())
                 .await;
             if event.cancelled {
+                if let Some(sequence) = trace_sequence {
+                    debug!(
+                        connection_id,
+                        sequence,
+                        state = ?packet_state,
+                        client_protocol = version.protocol_version(),
+                        packet_id_before_packet_sent = source_packet_id,
+                        payload_len_before_packet_sent = source_payload_len,
+                        packet_id_after_packet_sent = event.packet_id,
+                        payload_len_after_packet_sent = event.payload.len(),
+                        cancelled = true,
+                        "PJM clientbound packet trace"
+                    );
+                }
                 decrement_pending_bytes(pending_bytes, original_len);
                 continue;
             }
@@ -356,13 +396,8 @@ async fn apply_packet_sent_events(
 
         let mut native_layout = false;
         let mut cancelled = false;
-        let packet_state = player
-            .as_ref()
-            .and_then(|player| match player.client.as_ref() {
-                ClientPlatform::Java(client) => Some(client.connection_state.load()),
-                ClientPlatform::Bedrock(_) => None,
-            })
-            .unwrap_or(state);
+        let packet_id_before_translation = packet_id;
+        let payload_len_before_translation = payload.len();
         let event_output = apply_protocol_packet_event(
             server,
             connection_id,
@@ -375,6 +410,25 @@ async fn apply_packet_sent_events(
             &mut native_layout,
             &mut cancelled,
         );
+        if let Some(sequence) = trace_sequence {
+            debug!(
+                connection_id,
+                sequence,
+                state = ?packet_state,
+                client_protocol = version.protocol_version(),
+                packet_id_before_packet_sent = source_packet_id,
+                payload_len_before_packet_sent = source_payload_len,
+                packet_id_before_translation,
+                payload_len_before_translation,
+                packet_id_after_translation = packet_id,
+                payload_len_after_translation = payload.len(),
+                translated = native_layout,
+                cancelled,
+                clientbound_follow_ups = event_output.clientbound_packets.len(),
+                serverbound_follow_ups = event_output.serverbound_packets.len(),
+                "PJM clientbound packet trace"
+            );
+        }
         let clientbound_packets = event_output.clientbound_packets;
         let serverbound_packets = event_output.serverbound_packets;
         let follow_up_bytes = serverbound_packets.iter().fold(0usize, |total, packet| {
@@ -508,6 +562,7 @@ impl JavaClient {
         Self {
             id: pending.id,
             protocol_translator_active: false,
+            clientbound_diagnostic_trace_packets: AtomicUsize::new(0),
             gameprofile,
             config: ArcSwap::from_pointee(config),
             server_address: pending.server_address,
