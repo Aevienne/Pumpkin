@@ -172,8 +172,14 @@ fn packet_serialization_version(
 
 #[cfg(test)]
 mod packet_serialization_version_tests {
-    use super::packet_serialization_version;
+    use super::{JavaClient, packet_serialization_version};
+    use pumpkin_data::dimension::Dimension;
     use pumpkin_data::packet::CURRENT_MC_VERSION;
+    use pumpkin_protocol::codec::var_int::VarInt;
+    use pumpkin_protocol::java::client::play::{CLogin, CRespawn, PlayerSpawnData};
+    use pumpkin_protocol::packet::MultiVersionJavaPacket;
+    use pumpkin_protocol::ser::{NetworkReadExt, NetworkWriteExt};
+    use pumpkin_util::resource_location::ResourceLocation;
     use pumpkin_util::version::JavaMinecraftVersion;
 
     #[test]
@@ -186,6 +192,72 @@ mod packet_serialization_version_tests {
             packet_serialization_version(JavaMinecraftVersion::V_1_16_2, false),
             JavaMinecraftVersion::V_1_16_2
         );
+    }
+
+    #[test]
+    fn legacy_login_keeps_native_packet_id_and_inline_registry_payload() {
+        let version = JavaMinecraftVersion::V_1_16_2;
+        let dimensions = [ResourceLocation::from("minecraft:overworld")];
+        let spawn_data = PlayerSpawnData::new(
+            Dimension::OVERWORLD,
+            0,
+            0,
+            -1,
+            false,
+            true,
+            None,
+            VarInt(0),
+            VarInt(63),
+        );
+        let packet = CLogin::new(
+            1,
+            false,
+            &dimensions,
+            VarInt(50),
+            VarInt(8),
+            VarInt(8),
+            false,
+            true,
+            false,
+            spawn_data.clone(),
+            false,
+            false,
+        );
+
+        let encoded =
+            JavaClient::serialize_packet_with_versions(&packet, CURRENT_MC_VERSION, version)
+                .unwrap();
+        let mut payload = encoded.as_ref();
+        assert_eq!(
+            payload.get_var_int().unwrap().0,
+            CLogin::to_id(CURRENT_MC_VERSION)
+        );
+
+        let mut expected_payload = Vec::new();
+        packet
+            .write_packet_data(&mut expected_payload, &version)
+            .unwrap();
+        assert_eq!(payload, expected_payload.as_slice());
+        assert!(
+            payload.len() > 10_000,
+            "legacy inline registry codec is present"
+        );
+
+        let packet = CRespawn::new(spawn_data, CRespawn::KEEP_ALL_DATA);
+        let encoded =
+            JavaClient::serialize_packet_with_versions(&packet, CURRENT_MC_VERSION, version)
+                .unwrap();
+        let mut payload = encoded.as_ref();
+        assert_eq!(
+            payload.get_var_int().unwrap().0,
+            CRespawn::to_id(CURRENT_MC_VERSION)
+        );
+
+        let mut expected_payload = Vec::new();
+        packet
+            .write_packet_data(&mut expected_payload, &version)
+            .unwrap();
+        assert_eq!(payload, expected_payload.as_slice());
     }
 }
 
@@ -1075,6 +1147,27 @@ impl JavaClient {
         pumpkin_protocol::java::packet_encoder::serialize_packet(packet, &version)
     }
 
+    /// Serializes a packet with an independent packet ID and payload layout.
+    ///
+    /// The translator uses this for legacy Login/Respawn packets: the Pumpkin
+    /// writer supplies the older inline dimension registry codec, while PJM
+    /// still needs to recognize the packet by its native 26.3 ID.
+    pub(crate) fn serialize_packet_with_versions<P: ClientPacket>(
+        packet: &P,
+        packet_id_version: JavaMinecraftVersion,
+        payload_version: JavaMinecraftVersion,
+    ) -> Result<Bytes, WritingError> {
+        let packet_id = P::to_id(packet_id_version);
+        if packet_id < 0 {
+            return Err(WritingError::UnsupportedVersion(packet_id_version));
+        }
+
+        let mut packet_buf = Vec::new();
+        packet_buf.write_var_int(&VarInt(packet_id))?;
+        packet.write_packet_data(&mut packet_buf, &payload_version)?;
+        Ok(packet_buf.into())
+    }
+
     pub fn serialize_packet<P: ClientPacket>(&self, packet: &P) -> Result<Bytes, WritingError> {
         Self::serialize_packet_for_version(packet, self.packet_encoding_version())
     }
@@ -1093,6 +1186,49 @@ impl JavaClient {
     pub async fn send_packet<P: ClientPacket>(&self, packet: &P) {
         if let Ok(data) = self.serialize_packet(packet) {
             self.send_packet_now(data).await;
+        }
+    }
+
+    fn serialize_packet_with_compatibility_layout<P: ClientPacket>(
+        &self,
+        packet: &P,
+    ) -> Result<Bytes, WritingError> {
+        let client_version = self.version.load();
+        let packet_id_version = self.packet_encoding_version();
+        let payload_version =
+            if self.protocol_translator_active && client_version < JavaMinecraftVersion::V_1_20_2 {
+                client_version
+            } else {
+                packet_id_version
+            };
+
+        Self::serialize_packet_with_versions(packet, packet_id_version, payload_version)
+    }
+
+    /// Sends Login/Respawn data with Pumpkin's legacy inline-registry layout
+    /// for clients that cannot receive a configuration-state registry stream.
+    pub(crate) async fn send_packet_with_compatibility_layout<P: ClientPacket>(&self, packet: &P) {
+        match self.serialize_packet_with_compatibility_layout(packet) {
+            Ok(data) => self.send_packet_now(data).await,
+            Err(err) => warn!(
+                packet = std::any::type_name::<P>(),
+                ?err,
+                "Failed to serialize compatibility-layout packet"
+            ),
+        }
+    }
+
+    pub(crate) async fn enqueue_packet_with_compatibility_layout<P: ClientPacket>(
+        &self,
+        packet: &P,
+    ) {
+        match self.serialize_packet_with_compatibility_layout(packet) {
+            Ok(data) => self.enqueue_packet(data).await,
+            Err(err) => warn!(
+                packet = std::any::type_name::<P>(),
+                ?err,
+                "Failed to serialize compatibility-layout packet"
+            ),
         }
     }
 

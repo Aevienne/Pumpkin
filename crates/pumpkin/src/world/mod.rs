@@ -3161,7 +3161,7 @@ impl World {
         };
         // Send the login packet for our new player
         client
-            .send_packet(&CLogin::new(
+            .send_packet_with_compatibility_layout(&CLogin::new(
                 entity_id,
                 base_config.hardcore,
                 &dimensions,
@@ -4074,23 +4074,26 @@ impl World {
                 .await;
         }
 
-        // Send respawn packet with target dimension (using send_packet_now to ensure proper order)
-        player
-            .send_client_packet(&CRespawn::new(
-                PlayerSpawnData::new(
-                    target_world.dimension.clone(),
-                    biome::hash_seed(target_world.level.seed.0),
-                    player.gamemode.load() as u8,
-                    player.gamemode.load() as i8,
-                    false,
-                    false,
-                    Some((death_dimension, death_location)),
-                    VarInt(player.get_entity().portal_cooldown.load(Ordering::Relaxed) as i32),
-                    target_world.sea_level.into(),
-                ),
-                data_kept,
-            ))
-            .await;
+        // Queue the respawn packet before the subsequent world-state packets.
+        let respawn_packet = CRespawn::new(
+            PlayerSpawnData::new(
+                target_world.dimension.clone(),
+                biome::hash_seed(target_world.level.seed.0),
+                player.gamemode.load() as u8,
+                player.gamemode.load() as i8,
+                false,
+                false,
+                Some((death_dimension, death_location)),
+                VarInt(player.get_entity().portal_cooldown.load(Ordering::Relaxed) as i32),
+                target_world.sea_level.into(),
+            ),
+            data_kept,
+        );
+        if let crate::net::ClientPlatform::Java(java_client) = player.client.as_ref() {
+            java_client
+                .enqueue_packet_with_compatibility_layout(&respawn_packet)
+                .await;
+        }
 
         // DIAGNOSTIC: tag every remaining default-spawn emit so a join crash
         // can be attributed to an exact site.

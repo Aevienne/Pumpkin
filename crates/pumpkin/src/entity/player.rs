@@ -4077,9 +4077,7 @@ impl Player {
                             ),
                             CRespawn::KEEP_ALL_DATA,
                         );
-                        if let Ok(data) = java.serialize_packet(&packet) {
-                            java.send_packet_now(data).await;
-                        }
+                        java.send_packet_with_compatibility_layout(&packet).await;
                     }
                     ClientPlatform::Bedrock(bedrock) => {
                         let bedrock_dimension = if new_world.dimension == Dimension::OVERWORLD {
