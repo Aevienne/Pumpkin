@@ -179,7 +179,6 @@ mod packet_serialization_version_tests {
     use pumpkin_protocol::codec::var_int::VarInt;
     use pumpkin_protocol::java::client::play::{CLogin, CRespawn, PlayerSpawnData};
     use pumpkin_protocol::packet::MultiVersionJavaPacket;
-    use pumpkin_protocol::ser::NetworkReadExt;
     use pumpkin_util::resource_location::ResourceLocation;
     use pumpkin_util::version::JavaMinecraftVersion;
 
@@ -228,19 +227,20 @@ mod packet_serialization_version_tests {
         let encoded =
             JavaClient::serialize_packet_with_versions(&packet, CURRENT_MC_VERSION, version)
                 .unwrap();
-        let mut payload = encoded.as_ref();
+        let mut header = std::io::Cursor::new(encoded.as_ref());
         assert_eq!(
-            payload.get_var_int().unwrap().0,
+            VarInt::decode(&mut header).unwrap().0,
             CLogin::to_id(CURRENT_MC_VERSION)
         );
+        let payload_start = header.position() as usize;
 
         let mut expected_payload = Vec::new();
         packet
             .write_packet_data(&mut expected_payload, &version)
             .unwrap();
-        assert_eq!(payload, expected_payload.as_slice());
+        assert_eq!(&encoded[payload_start..], expected_payload.as_slice());
         assert!(
-            payload.len() > 10_000,
+            encoded.len() - payload_start > 10_000,
             "legacy inline registry codec is present"
         );
 
@@ -248,17 +248,18 @@ mod packet_serialization_version_tests {
         let encoded =
             JavaClient::serialize_packet_with_versions(&packet, CURRENT_MC_VERSION, version)
                 .unwrap();
-        let mut payload = encoded.as_ref();
+        let mut header = std::io::Cursor::new(encoded.as_ref());
         assert_eq!(
-            payload.get_var_int().unwrap().0,
+            VarInt::decode(&mut header).unwrap().0,
             CRespawn::to_id(CURRENT_MC_VERSION)
         );
+        let payload_start = header.position() as usize;
 
         let mut expected_payload = Vec::new();
         packet
             .write_packet_data(&mut expected_payload, &version)
             .unwrap();
-        assert_eq!(payload, expected_payload.as_slice());
+        assert_eq!(&encoded[payload_start..], expected_payload.as_slice());
     }
 }
 
