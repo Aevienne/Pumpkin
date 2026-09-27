@@ -90,6 +90,7 @@ pub struct JavaClient {
     pub version: AtomicCell<JavaMinecraftVersion>,
     protocol_translator_active: bool,
     clientbound_diagnostic_trace_packets: AtomicUsize,
+    serverbound_diagnostic_trace_packets: AtomicUsize,
     /// The client's game profile information. Direct field (lock-free).
     pub gameprofile: GameProfile,
     /// The client's configuration settings. Lock-free `ArcSwap`.
@@ -637,6 +638,7 @@ impl JavaClient {
             id: pending.id,
             protocol_translator_active: false,
             clientbound_diagnostic_trace_packets: AtomicUsize::new(0),
+            serverbound_diagnostic_trace_packets: AtomicUsize::new(0),
             gameprofile,
             config: ArcSwap::from_pointee(config),
             server_address: pending.server_address,
@@ -1434,6 +1436,21 @@ impl JavaClient {
         native_layout: bool,
     ) -> Result<(), Box<dyn PumpkinError>> {
         let client_version = self.version.load();
+        let source_packet_id = packet.id;
+        let source_payload_len = packet.payload.len();
+        let state = self.connection_state.load();
+        let trace_sequence = if !native_layout
+            && client_version == JavaMinecraftVersion::V_1_16_2
+            && state == ConnectionState::Play
+            && self.protocol_translator_active
+        {
+            let sequence = self
+                .serverbound_diagnostic_trace_packets
+                .fetch_add(1, Ordering::Relaxed);
+            (sequence < 24).then_some(sequence + 1)
+        } else {
+            None
+        };
         let (
             packet_id,
             packet_payload,
@@ -1458,11 +1475,25 @@ impl JavaClient {
             );
             server.plugin_manager.fire_blocking(server, &mut event);
             if event.cancelled {
+                if let Some(sequence) = trace_sequence {
+                    debug!(
+                        connection_id = self.id,
+                        sequence,
+                        state = ?state,
+                        client_protocol = client_version.protocol_version(),
+                        packet_id_before_received_event = source_packet_id,
+                        payload_len_before_received_event = source_payload_len,
+                        cancelled = true,
+                        "PJM serverbound packet trace"
+                    );
+                }
                 return Ok(());
             }
 
             let mut packet_id = event.packet_id;
             let mut packet_payload = event.payload;
+            let packet_id_after_received_event = packet_id;
+            let payload_len_after_received_event = packet_payload.len();
             let mut translated = false;
             let mut cancelled = false;
             let event_output = apply_protocol_packet_event(
@@ -1477,6 +1508,25 @@ impl JavaClient {
                 &mut translated,
                 &mut cancelled,
             );
+            if let Some(sequence) = trace_sequence {
+                debug!(
+                    connection_id = self.id,
+                    sequence,
+                    state = ?state,
+                    client_protocol = client_version.protocol_version(),
+                    packet_id_before_received_event = source_packet_id,
+                    payload_len_before_received_event = source_payload_len,
+                    packet_id_after_received_event,
+                    payload_len_after_received_event,
+                    packet_id_after_translation = packet_id,
+                    payload_len_after_translation = packet_payload.len(),
+                    translated,
+                    cancelled,
+                    clientbound_follow_ups = event_output.clientbound_packets.len(),
+                    serverbound_follow_ups = event_output.serverbound_packets.len(),
+                    "PJM serverbound packet trace"
+                );
+            }
             (
                 packet_id,
                 packet_payload,
