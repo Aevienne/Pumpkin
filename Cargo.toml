@@ -119,15 +119,16 @@ strip = "debuginfo"
 codegen-units = 1
 
 # The PlayAsia lobby is built repeatedly from GitHub Actions while protocol
-# compatibility is being iterated. Multiple codegen units and incremental
-# compilation keep those rebuilds practical. LTO stays off here because its
-# final link dominates every iterative CI build; the upstream release profile
-# remains unchanged for production-quality full-LTO releases.
+# compatibility is being iterated. sccache stores workspace compiler outputs
+# between runs, so incremental compilation must stay off: rustc incremental
+# invocations cannot use sccache. Multiple codegen units keep changed crates
+# parallel; LTO stays off here because its final link dominates iterative builds.
+# The upstream release profile remains unchanged for full-LTO releases.
 [profile.playasia-lobby]
 inherits = "release"
 lto = false
 codegen-units = 16
-incremental = true
+incremental = false
 
 [profile.bench]
 debug = true

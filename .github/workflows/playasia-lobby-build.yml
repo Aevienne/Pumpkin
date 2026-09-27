@@ -62,6 +62,8 @@ jobs:
           mkdir -p dist
           cp target/playasia-lobby/pumpkin dist/pumpkin
           sha256sum dist/pumpkin > dist/pumpkin.sha256
+          git rev-parse HEAD > dist/SOURCE_REV
+          sccache --show-stats > dist/BUILD_CACHE_STATS.txt 2>&1 || true
 
       - uses: actions/upload-artifact@v7
         with:

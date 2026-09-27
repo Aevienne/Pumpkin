@@ -16,7 +16,12 @@ impl PendingConnection {
         self.version
             .store(JavaMinecraftVersion::from_protocol(version));
 
-        debug!("Handshake: next state is {:?}", &handshake.next_state);
+        debug!(
+            "Handshake: client protocol {} resolved to {:?}; next state is {:?}",
+            version,
+            self.version.load(),
+            &handshake.next_state
+        );
         self.connection_state.store(handshake.next_state);
         if handshake.next_state == ConnectionState::Transfer
             && !server.basic_config.accepts_transfers
