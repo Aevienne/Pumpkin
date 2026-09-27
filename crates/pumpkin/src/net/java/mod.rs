@@ -179,7 +179,7 @@ mod packet_serialization_version_tests {
     use pumpkin_protocol::codec::var_int::VarInt;
     use pumpkin_protocol::java::client::play::{CLogin, CRespawn, PlayerSpawnData};
     use pumpkin_protocol::packet::MultiVersionJavaPacket;
-    use pumpkin_protocol::ser::{NetworkReadExt, NetworkWriteExt};
+    use pumpkin_protocol::ser::NetworkReadExt;
     use pumpkin_util::resource_location::ResourceLocation;
     use pumpkin_util::version::JavaMinecraftVersion;
 
