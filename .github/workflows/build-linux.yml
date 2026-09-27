@@ -23,6 +23,16 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 1
+  # Faster production-profile builds for this artifact workflow. Thin LTO
+  # keeps whole-program optimization with substantially less link time, and
+  # multiple codegen units let rustc use the hosted runner's parallel CPUs.
+  # Cargo.toml's release profile remains unchanged for other build workflows.
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  # Use the mold linker installed below; previously it was installed but not
+  # selected, so the workflow paid the install cost without using it.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+  RUSTFLAGS: -C link-arg=-fuse-ld=mold
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: sccache
 
@@ -68,6 +78,9 @@ jobs:
           # pumpkin revs; a struct drift here segfaults first FFI reads).
           git rev-parse HEAD > dist/SOURCE_REV
           grep '^version' crates/pumpkin/Cargo.toml | head -n 1 > dist/SOURCE_VERSION || true
+          # Keep cache hit/miss evidence with the artifact so cold and warm
+          # CI runs can be distinguished without scraping verbose build logs.
+          sccache --show-stats > dist/BUILD_CACHE_STATS.txt 2>&1 || true
           ls -lh dist/
 
       - name: Upload artifact
