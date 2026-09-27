@@ -175,6 +175,7 @@ mod packet_serialization_version_tests {
     use super::{JavaClient, packet_serialization_version};
     use pumpkin_data::dimension::Dimension;
     use pumpkin_data::packet::CURRENT_MC_VERSION;
+    use pumpkin_protocol::ClientPacket;
     use pumpkin_protocol::codec::var_int::VarInt;
     use pumpkin_protocol::java::client::play::{CLogin, CRespawn, PlayerSpawnData};
     use pumpkin_protocol::packet::MultiVersionJavaPacket;
