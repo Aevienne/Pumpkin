@@ -406,6 +406,30 @@ async fn apply_packet_sent_events(
     let mut translated_packets = Vec::with_capacity(packets.len());
     for mut packet in packets {
         if packet.translation_applied {
+            if version == JavaMinecraftVersion::V_1_16_2
+                && let Some(player) = player.as_ref()
+                && let ClientPlatform::Java(client) = player.client.as_ref()
+                && client.protocol_translator_active
+                && client.connection_state.load() == ConnectionState::Play
+            {
+                let sequence = client
+                    .clientbound_diagnostic_trace_packets
+                    .fetch_add(1, Ordering::Relaxed);
+                if sequence < 24 {
+                    let mut encoded = packet.data.as_ref();
+                    if let Ok(packet_id) = encoded.get_var_int() {
+                        debug!(
+                            connection_id,
+                            sequence = sequence + 1,
+                            client_protocol = version.protocol_version(),
+                            packet_id_to_client = packet_id.0,
+                            payload_len_to_client = encoded.len(),
+                            already_translated = true,
+                            "PJM clientbound packet trace"
+                        );
+                    }
+                }
+            }
             translated_packets.push(packet);
             continue;
         }
