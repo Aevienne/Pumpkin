@@ -1246,6 +1246,17 @@ impl JavaClient {
         }
     }
 
+    pub(crate) fn try_send_packet_with_compatibility_layout<P: ClientPacket>(&self, packet: &P) {
+        match self.serialize_packet_with_compatibility_layout(packet) {
+            Ok(data) => self.try_enqueue_packet(data),
+            Err(err) => warn!(
+                packet = std::any::type_name::<P>(),
+                ?err,
+                "Failed to serialize compatibility-layout packet"
+            ),
+        }
+    }
+
     pub(crate) async fn enqueue_packet_with_compatibility_layout<P: ClientPacket>(
         &self,
         packet: &P,

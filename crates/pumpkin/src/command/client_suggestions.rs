@@ -143,7 +143,9 @@ pub fn send_c_commands_packet(
 
     let root_node_index = ROOT_NODE_ID.0.get() - 1;
     let packet = CCommands::new(proto_nodes.into(), VarInt(root_node_index as i32));
-    player.try_send_client_packet(&packet);
+    if let crate::net::ClientPlatform::Java(client) = player.client.as_ref() {
+        client.try_send_packet_with_compatibility_layout(&packet);
+    }
 }
 
 struct BuilderContext<'a> {
