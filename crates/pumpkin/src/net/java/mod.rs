@@ -79,6 +79,16 @@ use crate::plugin::player::player_custom_payload::PlayerCustomPayloadEvent;
 use crate::{error::PumpkinError, server::Server};
 
 const MAX_TRANSLATED_FOLLOW_UP_PACKETS: usize = 64;
+const MAX_DIAGNOSTIC_TRACE_PACKETS: usize = 24;
+
+fn should_trace_java_diagnostic(version: JavaMinecraftVersion) -> bool {
+    matches!(
+        version,
+        JavaMinecraftVersion::V_1_16_2
+            | JavaMinecraftVersion::V_26_2
+            | JavaMinecraftVersion::V_26_3
+    )
+}
 
 pub(crate) struct ProtocolPacketEventOutput {
     pub clientbound_packets: Vec<PacketTranslationOutput>,
@@ -406,7 +416,7 @@ async fn apply_packet_sent_events(
     let mut translated_packets = Vec::with_capacity(packets.len());
     for mut packet in packets {
         if packet.translation_applied {
-            if version == JavaMinecraftVersion::V_1_16_2
+            if should_trace_java_diagnostic(version)
                 && let Some(player) = player.as_ref()
                 && let ClientPlatform::Java(client) = player.client.as_ref()
                 && client.protocol_translator_active
@@ -415,7 +425,7 @@ async fn apply_packet_sent_events(
                 let sequence = client
                     .clientbound_diagnostic_trace_packets
                     .fetch_add(1, Ordering::Relaxed);
-                if sequence < 24 {
+                if sequence < MAX_DIAGNOSTIC_TRACE_PACKETS {
                     let mut encoded = packet.data.as_ref();
                     if let Ok(packet_id) = encoded.get_var_int() {
                         debug!(
@@ -450,7 +460,7 @@ async fn apply_packet_sent_events(
         let source_packet_id = packet_id;
         let source_payload_len = payload.len();
         let trace_sequence =
-            if version == JavaMinecraftVersion::V_1_16_2 && packet_state == ConnectionState::Play {
+            if should_trace_java_diagnostic(version) && packet_state == ConnectionState::Play {
                 player
                     .as_ref()
                     .and_then(|player| match player.client.as_ref() {
@@ -458,7 +468,7 @@ async fn apply_packet_sent_events(
                             let sequence = client
                                 .clientbound_diagnostic_trace_packets
                                 .fetch_add(1, Ordering::Relaxed);
-                            (sequence < 24).then_some(sequence + 1)
+                            (sequence < MAX_DIAGNOSTIC_TRACE_PACKETS).then_some(sequence + 1)
                         }
                         _ => None,
                     })
@@ -1474,15 +1484,14 @@ impl JavaClient {
         let source_packet_id = packet.id;
         let source_payload_len = packet.payload.len();
         let state = self.connection_state.load();
-        let trace_sequence = if !native_layout
-            && client_version == JavaMinecraftVersion::V_1_16_2
+        let trace_sequence = if should_trace_java_diagnostic(client_version)
             && state == ConnectionState::Play
             && self.protocol_translator_active
         {
             let sequence = self
                 .serverbound_diagnostic_trace_packets
                 .fetch_add(1, Ordering::Relaxed);
-            (sequence < 24).then_some(sequence + 1)
+            (sequence < MAX_DIAGNOSTIC_TRACE_PACKETS).then_some(sequence + 1)
         } else {
             None
         };
@@ -1571,6 +1580,25 @@ impl JavaClient {
                 event_output.serverbound_packets,
             )
         };
+
+        if native_layout
+            && let Some(sequence) = trace_sequence
+        {
+            debug!(
+                connection_id = self.id,
+                sequence,
+                state = ?state,
+                client_protocol = client_version.protocol_version(),
+                packet_id = source_packet_id,
+                payload_len = source_payload_len,
+                native_layout,
+                translated,
+                cancelled,
+                clientbound_follow_ups = clientbound_packets.len(),
+                serverbound_follow_ups = serverbound_packets.len(),
+                "PJM serverbound packet trace"
+            );
+        }
 
         for reply in clientbound_packets {
             self.try_enqueue_translated_packet(reply.packet_id, &reply.payload);
