@@ -101,6 +101,8 @@ pub struct JavaClient {
     protocol_translator_active: bool,
     clientbound_diagnostic_trace_packets: AtomicUsize,
     serverbound_diagnostic_trace_packets: AtomicUsize,
+    raw_serverbound_diagnostic_trace_packets: AtomicUsize,
+    flushed_clientbound_diagnostic_trace_packets: AtomicUsize,
     /// The client's game profile information. Direct field (lock-free).
     pub gameprofile: GameProfile,
     /// The client's configuration settings. Lock-free `ArcSwap`.
@@ -673,6 +675,8 @@ impl JavaClient {
             protocol_translator_active: false,
             clientbound_diagnostic_trace_packets: AtomicUsize::new(0),
             serverbound_diagnostic_trace_packets: AtomicUsize::new(0),
+            raw_serverbound_diagnostic_trace_packets: AtomicUsize::new(0),
+            flushed_clientbound_diagnostic_trace_packets: AtomicUsize::new(0),
             gameprofile,
             config: ArcSwap::from_pointee(config),
             server_address: pending.server_address,
@@ -1026,13 +1030,60 @@ impl JavaClient {
     ) -> Option<RawPacket> {
         tokio::select! {
             () = self.await_close_interrupt() => {
+                if should_trace_java_diagnostic(self.version.load())
+                    && self.connection_state.load() == ConnectionState::Play
+                    && self.protocol_translator_active
+                {
+                    debug!(
+                        connection_id = self.id,
+                        client_protocol = self.version.load().protocol_version(),
+                        "PJM raw serverbound packet read cancelled"
+                    );
+                }
                 debug!("Canceling player packet processing");
                 None
             },
             packet_result = network_reader.get_raw_packet() => {
                 match packet_result {
-                    Ok(packet) => Some(packet),
+                    Ok(packet) => {
+                        let version = self.version.load();
+                        let state = self.connection_state.load();
+                        if should_trace_java_diagnostic(version)
+                            && state == ConnectionState::Play
+                            && self.protocol_translator_active
+                        {
+                            let sequence = self
+                                .raw_serverbound_diagnostic_trace_packets
+                                .fetch_add(1, Ordering::Relaxed);
+                            if sequence < MAX_DIAGNOSTIC_TRACE_PACKETS {
+                                debug!(
+                                    connection_id = self.id,
+                                    sequence = sequence + 1,
+                                    state = ?state,
+                                    client_protocol = version.protocol_version(),
+                                    packet_id = packet.id,
+                                    payload_len = packet.payload.len(),
+                                    "PJM raw serverbound packet received"
+                                );
+                            }
+                        }
+                        Some(packet)
+                    }
                     Err(err) => {
+                        let version = self.version.load();
+                        let state = self.connection_state.load();
+                        if should_trace_java_diagnostic(version)
+                            && state == ConnectionState::Play
+                            && self.protocol_translator_active
+                        {
+                            debug!(
+                                connection_id = self.id,
+                                state = ?state,
+                                client_protocol = version.protocol_version(),
+                                error = ?err,
+                                "PJM raw serverbound packet read ended"
+                            );
+                        }
                         if !matches!(err, PacketDecodeError::ConnectionClosed) {
                             debug!("Failed to decode packet from client {}: {}", self.id, err);
                             let text = format!("Error while reading incoming packet {err}");
@@ -1411,6 +1462,23 @@ impl JavaClient {
                     }
 
                     if let Err(err) = writer.write_frame(&frame).await {
+                        let current_player = player.load_full();
+                        if !close_token.is_cancelled()
+                            && should_trace_java_diagnostic(version)
+                            && let Some(active_player) = current_player.as_ref()
+                            && let ClientPlatform::Java(client) = active_player.client.as_ref()
+                            && client.connection_state.load() == ConnectionState::Play
+                            && client.protocol_translator_active
+                        {
+                            debug!(
+                                connection_id,
+                                client_protocol = version.protocol_version(),
+                                frame_bytes = frame.len(),
+                                packets_in_batch = returned_batch.len(),
+                                error = ?err,
+                                "PJM clientbound frame write failed"
+                            );
+                        }
                         if !close_token.is_cancelled() {
                             warn!("Failed to send packet batch to client {id}: {err}");
                         }
@@ -1422,10 +1490,59 @@ impl JavaClient {
                 }
 
                 if !send_failed && let Err(err) = writer.flush().await {
+                    let current_player = player.load_full();
+                    if !close_token.is_cancelled()
+                        && should_trace_java_diagnostic(version)
+                        && let Some(active_player) = current_player.as_ref()
+                        && let ClientPlatform::Java(client) = active_player.client.as_ref()
+                        && client.connection_state.load() == ConnectionState::Play
+                        && client.protocol_translator_active
+                    {
+                        debug!(
+                            connection_id,
+                            client_protocol = version.protocol_version(),
+                            packets_in_batch = written_packets.len(),
+                            payload_bytes_in_batch = written_packets
+                                .iter()
+                                .map(|packet| packet.data.len())
+                                .sum::<usize>(),
+                            error = ?err,
+                            "PJM clientbound packet flush failed"
+                        );
+                    }
                     if !close_token.is_cancelled() {
                         warn!("Failed to flush packet batch for client {id}: {err}");
                     }
                     send_failed = true;
+                }
+
+                let current_player = player.load_full();
+                if !send_failed
+                    && let Some(active_player) = current_player.as_ref()
+                    && let ClientPlatform::Java(client) = active_player.client.as_ref()
+                    && should_trace_java_diagnostic(version)
+                    && client.connection_state.load() == ConnectionState::Play
+                    && client.protocol_translator_active
+                {
+                    for packet in &written_packets {
+                        let sequence = client
+                            .flushed_clientbound_diagnostic_trace_packets
+                            .fetch_add(1, Ordering::Relaxed);
+                        if sequence >= MAX_DIAGNOSTIC_TRACE_PACKETS {
+                            break;
+                        }
+                        let mut encoded = packet.data.as_ref();
+                        if let Ok(packet_id) = encoded.get_var_int() {
+                            debug!(
+                                connection_id,
+                                sequence = sequence + 1,
+                                client_protocol = version.protocol_version(),
+                                packet_id_to_client = packet_id.0,
+                                payload_len_to_client = encoded.len(),
+                                "PJM clientbound packet flushed"
+                            );
+                        }
+                    }
                 }
 
                 let flushed_bytes: usize = written_packets.iter().map(|p| p.data.len()).sum();
@@ -1581,9 +1698,7 @@ impl JavaClient {
             )
         };
 
-        if native_layout
-            && let Some(sequence) = trace_sequence
-        {
+        if native_layout && let Some(sequence) = trace_sequence {
             debug!(
                 connection_id = self.id,
                 sequence,
