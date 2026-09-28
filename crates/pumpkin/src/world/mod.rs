@@ -3272,7 +3272,6 @@ impl World {
         player.living_entity.entity.set_pos(position);
         player.living_entity.entity.set_rotation(yaw, pitch);
         player.living_entity.entity.last_pos.store(position);
-        chunker::update_position(player);
 
         let center_chunk = player.living_entity.entity.chunk_pos.load();
         let chunk = self
@@ -3287,12 +3286,28 @@ impl World {
                 return;
             }
         }
-        client.send_chunks(&[chunk]).await;
+        // Reserve this one-off center batch before queueing the surrounding view. Otherwise the
+        // player tick can start a regular batch while this high-priority batch is still in flight.
+        client.reserve_chunk_batch();
+        chunker::update_position(player);
         player
             .chunk_sender
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .mark_sent_out_of_band(center_chunk);
+            .reserve_out_of_band_chunk(center_chunk);
+        if client.send_chunks_reserved_approved(&[chunk]).await {
+            player
+                .chunk_sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mark_sent_out_of_band(center_chunk);
+        } else {
+            player
+                .chunk_sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .enqueue_chunk(center_chunk);
+        }
 
         let velocity = player.living_entity.entity.velocity.load();
 

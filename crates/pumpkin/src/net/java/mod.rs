@@ -833,25 +833,82 @@ impl JavaClient {
     }
 
     pub async fn send_chunks(&self, chunks: &[SyncChunk]) {
+        let _ = self.send_chunks_impl(chunks, false, false).await;
+    }
+
+    /// Sends chunks already approved by their `ChunkSend` hook.
+    pub(crate) async fn send_chunks_reserved_approved(&self, chunks: &[SyncChunk]) -> bool {
+        self.send_chunks_impl(chunks, true, true).await
+    }
+
+    /// Reserves the acknowledgment slot and gates regular sends before world-transition chunks are scheduled.
+    pub(crate) fn reserve_chunk_batch(&self) {
+        let track_acknowledgment = self.version.load() >= JavaMinecraftVersion::V_1_20_2;
         let player = self.player.load_full();
         let Some(player) = player.as_ref() else {
             return;
         };
+        player
+            .chunk_sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reserve_out_of_band_batch(track_acknowledgment);
+    }
+
+    fn finish_reserved_chunk_batch(&self, abort: bool) {
+        let track_acknowledgment = self.version.load() >= JavaMinecraftVersion::V_1_20_2;
+        let player = self.player.load_full();
+        if let Some(player) = player.as_ref() {
+            let mut sender = player
+                .chunk_sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if abort {
+                sender.abort_out_of_band_batch(track_acknowledgment);
+            } else {
+                sender.finish_out_of_band_batch();
+            }
+        }
+    }
+
+    async fn send_chunks_impl(
+        &self,
+        chunks: &[SyncChunk],
+        batch_reserved: bool,
+        events_already_approved: bool,
+    ) -> bool {
+        let player = self.player.load_full();
+        let Some(player) = player.as_ref() else {
+            if batch_reserved {
+                self.finish_reserved_chunk_batch(true);
+            }
+            return false;
+        };
         let Some(server) = player.world().server.upgrade() else {
-            return;
+            if batch_reserved {
+                self.finish_reserved_chunk_batch(true);
+            }
+            return false;
         };
 
         let mut valid_chunks = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
-            let mut event = ChunkSend::new(player.world(), chunk.clone());
-            server.plugin_manager.fire(&server, &mut event).await;
-            if !event.cancelled {
-                valid_chunks.push(chunk.clone());
+        if events_already_approved {
+            valid_chunks.extend_from_slice(chunks);
+        } else {
+            for chunk in chunks {
+                let mut event = ChunkSend::new(player.world(), chunk.clone());
+                server.plugin_manager.fire(&server, &mut event).await;
+                if !event.cancelled {
+                    valid_chunks.push(chunk.clone());
+                }
             }
         }
 
         if valid_chunks.is_empty() {
-            return;
+            if batch_reserved {
+                self.finish_reserved_chunk_batch(true);
+            }
+            return false;
         }
 
         let version = self.version.load();
@@ -904,30 +961,53 @@ impl JavaClient {
         });
 
         let Ok(serialized) = rx.await else {
-            return;
+            if batch_reserved {
+                self.finish_reserved_chunk_batch(true);
+            }
+            return false;
         };
         let sent_count = serialized.len();
         if sent_count == 0 {
-            return;
+            if batch_reserved {
+                self.finish_reserved_chunk_batch(true);
+            }
+            return false;
         }
 
         if version >= JavaMinecraftVersion::V_1_20_2 {
             self.send_packet(&CChunkBatchStart).await;
+            if self.is_closed() {
+                return false;
+            }
         }
 
         // Keep the whole batch on the priority queue. Otherwise the batch end can overtake chunk
         // data queued on the normal channel, leaving the client unable to render those chunks.
         for (chunk_data, light_data) in serialized {
             self.send_packet_now_data(chunk_data).await;
+            if self.is_closed() {
+                return false;
+            }
             if let Some(light_data) = light_data {
                 self.send_packet_now_data(light_data).await;
+                if self.is_closed() {
+                    return false;
+                }
             }
         }
 
         if version >= JavaMinecraftVersion::V_1_20_2 {
             self.send_packet(&CChunkBatchEnd::new(sent_count as u16))
                 .await;
+            if self.is_closed() {
+                return false;
+            }
         }
+
+        if batch_reserved {
+            self.finish_reserved_chunk_batch(false);
+        }
+        true
     }
 
     #[allow(clippy::unused_async)]

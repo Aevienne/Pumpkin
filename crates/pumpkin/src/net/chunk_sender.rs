@@ -70,6 +70,7 @@ pub struct ChunkSender {
     /// Monotonic across resets, so a superseded dispatch can never match again.
     next_delivery_token: u64,
     pub in_flight_batches: u16,
+    out_of_band_batch_active: bool,
     pub desired_rate: f32,
     pub send_quota: f32,
     pub max_in_flight: u16,
@@ -84,6 +85,7 @@ impl ChunkSender {
             awaiting_delivery: FxHashMap::default(),
             next_delivery_token: 0,
             in_flight_batches: 0,
+            out_of_band_batch_active: false,
             desired_rate: INITIAL_CHUNKS_PER_TICK,
             send_quota: 0.0,
             max_in_flight: 1,
@@ -95,7 +97,40 @@ impl ChunkSender {
         self.sent_chunks.clear();
         self.awaiting_delivery.clear();
         self.in_flight_batches = 0;
+        self.out_of_band_batch_active = false;
         self.send_quota = 0.0;
+    }
+
+    /// Registers a Java chunk batch emitted outside `commit_batch`.
+    pub fn reserve_batch(&mut self) {
+        self.in_flight_batches = self.in_flight_batches.saturating_add(1);
+    }
+
+    /// Reserves an out-of-band chunk send and gates regular sends until it completes.
+    pub fn reserve_out_of_band_batch(&mut self, track_acknowledgment: bool) {
+        if track_acknowledgment {
+            self.reserve_batch();
+        }
+        self.out_of_band_batch_active = true;
+    }
+
+    /// Releases the send-order gate after the reserved END packet has flushed.
+    pub fn finish_out_of_band_batch(&mut self) {
+        self.out_of_band_batch_active = false;
+    }
+
+    /// Cancels a reservation if no batch was started or serialized.
+    pub fn abort_out_of_band_batch(&mut self, track_acknowledgment: bool) {
+        self.out_of_band_batch_active = false;
+        if track_acknowledgment {
+            self.in_flight_batches = self.in_flight_batches.saturating_sub(1);
+        }
+    }
+
+    /// Removes a chunk from the regular queue while a separate Java batch sends it.
+    pub fn reserve_out_of_band_chunk(&mut self, pos: Vector2<i32>) {
+        self.pending_chunks.remove(&pos);
+        self.awaiting_delivery.remove(&pos);
     }
 
     #[must_use]
@@ -248,7 +283,9 @@ impl ChunkSender {
         epoch: u32,
         version: JavaMinecraftVersion,
     ) -> Option<PreparedBatch> {
-        if version >= JavaMinecraftVersion::V_1_20_2 && self.in_flight_batches >= self.max_in_flight
+        if self.out_of_band_batch_active
+            || (version >= JavaMinecraftVersion::V_1_20_2
+                && self.in_flight_batches >= self.max_in_flight)
         {
             return None;
         }
@@ -349,7 +386,10 @@ impl ChunkSender {
         client: &ClientPlatform,
         current_epoch: u32,
     ) -> Vec<Vector2<i32>> {
-        if current_epoch != batch.epoch_snapshot || encoded_chunks.is_empty() {
+        if current_epoch != batch.epoch_snapshot
+            || encoded_chunks.is_empty()
+            || self.out_of_band_batch_active
+        {
             return Vec::new();
         }
 
@@ -383,7 +423,7 @@ impl ChunkSender {
                 && let ClientPlatform::Java(java_client) = client
             {
                 java_client.try_send_packet(&CChunkBatchEnd::new(sent_count as u16));
-                self.in_flight_batches = self.in_flight_batches.saturating_add(1);
+                self.reserve_batch();
             }
 
             self.send_quota -= sent_count as f32;
