@@ -13,7 +13,7 @@ Migrate `DEVPlayAsia` → `Pumpkin DEV` on Calagopus VM, stabilize Pumpkin + Pat
   ```
   If not logged in: `Get-Content token.txt -Raw | gh auth login --with-token` then `Remove-Item token.txt -Force` (never commit token.txt).
 - Panel API key in env `calagopus` / `CALAGOPUS` (used as `Authorization: Bearer $key`).
-- VM SSH: `ailegrabielle@139.99.121.15:2222` pass `<redacted - held by owner>` hostkey `ssh-ed25519 255 SHA256:khTar0VCSUTUNy21qoL44GVZjDipvEQlB95vez8OpzY`
+- VM SSH: `ailegrabielle@139.99.121.15:2222` pass `<redacted — held by owner; rotate immediately>` hostkey `ssh-ed25519 255 SHA256:khTar0VCSUTUNy21qoL44GVZjDipvEQlB95vez8OpzY`
   Use `plink.exe -batch -hostkey <hk> -P 2222 -l ailegabrielle -pw <pw> 139.99.121.15 "<cmd>"` or `sudo -S -p '' bash -s` for volume ops.
 - Handoff: `C:\Users\Vincent\Desktop\snapwing\PUMPKIN-MIGRATION-HANDOFF.md` — read first.
 
